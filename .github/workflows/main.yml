@@ -1,0 +1,44 @@
+name: Delta OTM Options Observer
+
+on:
+  schedule:
+    - cron: '0 22 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-delta-script:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: |
+          echo "Installing required Python libraries..."
+          pip install requests
+          echo "Dependencies installed successfully!"
+      
+      - name: Run Delta OTM Script
+        run: |
+          echo "=========================================="
+          echo "Starting Delta OTM Options Observer"
+          echo "Time: $(date)"
+          echo "=========================================="
+          python 15StrikesFarOTMPicker.py
+          echo "=========================================="
+          echo "Script completed at: $(date)"
+          echo "=========================================="
+      
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: option-chain-logs-${{ github.run_number }}
+          path: option_chain_logs/
+          retention-days: 90
