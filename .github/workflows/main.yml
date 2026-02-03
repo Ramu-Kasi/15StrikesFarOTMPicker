@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: |
           echo "Installing required Python libraries..."
-          pip install requests
+          pip install requests pytz
           echo "Dependencies installed successfully!"
       
       - name: Run Delta OTM Script
