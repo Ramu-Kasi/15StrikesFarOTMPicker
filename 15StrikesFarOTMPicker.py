@@ -1,9 +1,6 @@
 import requests
 from datetime import datetime
-import pytz
 import os
-
-IST = pytz.timezone('Asia/Kolkata')
 
 # API Configuration
 # IMPORTANT: Using PRODUCTION API to get REAL bid/ask spreads
@@ -16,7 +13,7 @@ if not os.path.exists(logs_dir):
     os.makedirs(logs_dir)
 
 # Create filename with timestamp
-timestamp = datetime.now(IST).strftime('%Y-%m-%d_%H-%M-%S')
+timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 log_file = os.path.join(logs_dir, f"option_chain_{timestamp}.txt")
 
 # Function to write to both console and file
@@ -78,7 +75,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
     log_print("BTC ATM Options Chain - Scheduled Run", f)
     log_print("[DATA] PRODUCTION DATA (Real Market Bid/Ask Prices)", f)
     log_print("WARNING:  OBSERVATION MODE ONLY - No Orders Being Placed", f)
-    log_print(f"Timestamp: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}", f)
+    log_print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}", f)
     log_print("=" * 150, f)
     log_print("", f)
     
@@ -89,7 +86,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
     log_print("", f)
     
     # Step 1: Determine current active expiry based on time (5:30 PM cutoff)
-    today = datetime.now(IST)
+    today = datetime.now()
     log_print(f"Current Date & Time: {today.strftime('%d-%m-%Y %H:%M:%S IST')}", f)
     log_print("", f)
     
@@ -392,12 +389,10 @@ with open(log_file, 'w', encoding='utf-8') as f:
                     log_print(f"   Premium Balance: CE ${best_combo['call_bid']:.2f} | PE ${best_combo['put_bid']:.2f}", f)
                     log_print(f"   Imbalance: ${best_combo['imbalance']:.2f} ({best_combo['imbalance_pct']:.1f}%)", f)
                     
-                    if best_combo['imbalance_pct'] < 20:
-                        log_print(f"   [SUCCESS] Well balanced (delta-neutral)", f)
-                    elif best_combo['imbalance_pct'] < 40:
-                        log_print(f"   WARNING:  Moderate imbalance", f)
+                    if best_combo['imbalance'] <= 10:
+                        log_print(f"   [SUCCESS] Delta Neutral (diff <= $10)", f)
                     else:
-                        log_print(f"   WARNING:  High imbalance - but acceptable premiums", f)
+                        log_print(f"   [FAILED] NOT Delta Neutral (diff > $10)", f)
                 else:
                     # No good combination found - use symmetric strikes
                     log_print(f"WARNING:  No optimal combination found with sufficient premium", f)
