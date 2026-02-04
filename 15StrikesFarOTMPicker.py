@@ -1,6 +1,10 @@
 import requests
 from datetime import datetime
+import pytz
 import os
+
+# Timezone setup
+IST = pytz.timezone('Asia/Kolkata')
 
 # API Configuration
 # IMPORTANT: Using PRODUCTION API to get REAL bid/ask spreads
@@ -13,7 +17,7 @@ if not os.path.exists(logs_dir):
     os.makedirs(logs_dir)
 
 # Create filename with timestamp
-timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+timestamp = datetime.now(IST).strftime('%Y-%m-%d_%H-%M-%S')
 log_file = os.path.join(logs_dir, f"option_chain_{timestamp}.txt")
 
 # Function to write to both console and file
@@ -75,7 +79,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
     log_print("BTC ATM Options Chain - Scheduled Run", f)
     log_print("[DATA] PRODUCTION DATA (Real Market Bid/Ask Prices)", f)
     log_print("WARNING:  OBSERVATION MODE ONLY - No Orders Being Placed", f)
-    log_print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}", f)
+    log_print(f"Timestamp: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}", f)
     log_print("=" * 150, f)
     log_print("", f)
     
@@ -86,7 +90,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
     log_print("", f)
     
     # Step 1: Determine current active expiry based on time (5:30 PM cutoff)
-    today = datetime.now()
+    today = datetime.now(IST)
     log_print(f"Current Date & Time: {today.strftime('%d-%m-%Y %H:%M:%S IST')}", f)
     log_print("", f)
     
