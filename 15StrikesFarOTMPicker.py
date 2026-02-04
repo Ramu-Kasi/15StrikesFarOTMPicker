@@ -107,8 +107,8 @@ with open(log_file, 'w', encoding='utf-8') as f:
         target_expiry_date = today + timedelta(days=1)
         log_print(f"[TIME] Time is AFTER 5:30 PM - Looking for TOMORROW'S expiry ({target_expiry_date.strftime('%d-%m-%Y')})", f)
     
-    expiry_date_str = target_expiry_date.strftime('%d-%m-%Y')
-    log_print(f"[DATE] Target Expiry: {expiry_date_str}", f)
+    expiry_date_str = target_expiry_date.strftime('%d%m%y')  # Format: DDMMYY (e.g., 040226)
+    log_print(f"[DATE] Target Expiry: {target_expiry_date.strftime('%d-%m-%Y')} (API format: {expiry_date_str})", f)
     log_print("", f)
     
     # Step 2: Get current BTC spot price (ATM price)
