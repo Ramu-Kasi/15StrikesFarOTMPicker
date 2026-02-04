@@ -1,8 +1,6 @@
 name: Delta OTM Options Observer
 on:
-  schedule:
-    - cron: '0 22 * * *'
-  workflow_dispatch:
+  workflow_dispatch:  # Triggered manually or via API
 jobs:
   run-delta-script:
     runs-on: ubuntu-latest
