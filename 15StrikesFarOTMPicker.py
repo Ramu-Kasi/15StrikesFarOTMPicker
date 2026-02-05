@@ -26,7 +26,7 @@ def log_print(message, file):
     except UnicodeEncodeError:
         print(console_message.encode('ascii', errors='replace').decode('ascii'))
     file.write(message + "\n")
-    file.flush()  # Force write to disk
+    file.flush()
 
 def format_inr(amount):
     if amount >= 100000:
@@ -85,7 +85,6 @@ with open(log_file, 'w', encoding='utf-8') as f:
         response = requests.get(ticker_url, timeout=10)
         if response.status_code != 200:
             log_print(f"[ERROR] Failed to get spot price: {response.status_code}", f)
-            log_print(f"Response: {response.text}", f)
             raise Exception("Failed to get spot price")
         
         spot_price = float(response.json()['result']['spot_price'])
@@ -101,15 +100,12 @@ with open(log_file, 'w', encoding='utf-8') as f:
         response = requests.get(option_chain_url, params=params, timeout=15)
         if response.status_code != 200:
             log_print(f"[ERROR] Failed to get options: {response.status_code}", f)
-            log_print(f"Response: {response.text}", f)
             raise Exception("Failed to get options")
         
         options = response.json()['result']
         if not options:
             log_print(f"[ERROR] No options for {expiry_date_str}", f)
-            log_print("", f)
             log_print(f"Log saved to: {log_file}", f)
-            print(f"\n[INFO] No options available for {expiry_date_str}")
             exit(0)
         
         # Process options
@@ -123,19 +119,31 @@ with open(log_file, 'w', encoding='utf-8') as f:
         atm_strike = min(all_strikes, key=lambda x: abs(x - spot_price))
         atm_index = all_strikes.index(atm_strike)
         
+        log_print(f"Spot: ${spot_price:,.2f} | ATM: ${atm_strike:,.0f} (index {atm_index}) | Total strikes: {len(all_strikes)}", f)
+        log_print("", f)
+        
         calls_by_strike = {float(c['strike_price']): c for c in calls}
         puts_by_strike = {float(p['strike_price']): p for p in puts}
         
-        # Find optimal strikes (13-15 range)
+        # Find optimal strikes - PRIORITIZE DELTA NEUTRALITY
         max_call_strikes = len(all_strikes) - atm_index - 1
         max_put_strikes = atm_index
         
-        best_ce_distance = 13
-        best_pe_distance = 13
-        selection_reason = "Symmetric positioning (13 strikes)"
+        log_print(f"Available strikes: {max_call_strikes} above ATM, {max_put_strikes} below ATM", f)
+        log_print("", f)
+        
+        best_ce_distance = None
+        best_pe_distance = None
+        best_imbalance = float('inf')
+        best_combo = None
+        selection_reason = "Not optimized"
         
         if max_call_strikes >= 13 and max_put_strikes >= 13:
-            best_imbalance = float('inf')
+            log_print("DELTA NEUTRALITY OPTIMIZATION (13-15 strike range):", f)
+            log_print("Goal: Find strikes where CE premium ≈ PE premium (minimize imbalance)", f)
+            log_print("-" * 160, f)
+            
+            # Try ALL combinations from 13 to 15 on both sides
             for ce_dist in range(13, min(16, max_call_strikes + 1)):
                 for pe_dist in range(13, min(16, max_put_strikes + 1)):
                     call_strike = all_strikes[atm_index + ce_dist]
@@ -147,32 +155,80 @@ with open(log_file, 'w', encoding='utf-8') as f:
                     call_bid = float(call_opt.get('quotes', {}).get('best_bid', 0))
                     put_bid = float(put_opt.get('quotes', {}).get('best_bid', 0))
                     
+                    # Skip if premiums too low
                     if call_bid < 5 or put_bid < 5:
+                        log_print(f"  CE +{ce_dist} (${call_strike:,.0f}) | PE -{pe_dist} (${put_strike:,.0f}) -> SKIP (premium < $5)", f)
                         continue
                     
+                    # Calculate imbalance (delta neutrality metric)
                     imbalance = abs(call_bid - put_bid)
-                    total_width = ce_dist + pe_dist
-                    score = imbalance - (total_width * 0.5)
+                    imbalance_pct = (imbalance / max(call_bid, put_bid) * 100)
                     
-                    if score < best_imbalance:
-                        best_imbalance = score
+                    log_print(f"  CE +{ce_dist} (${call_strike:,.0f}, bid ${call_bid:.2f}) | PE -{pe_dist} (${put_strike:,.0f}, bid ${put_bid:.2f}) -> Δ${imbalance:.2f} ({imbalance_pct:.1f}%)", f)
+                    
+                    # PRIORITIZE DELTA NEUTRALITY - lowest imbalance wins
+                    # If imbalance is tied, prefer wider strikes
+                    if imbalance < best_imbalance:
+                        best_imbalance = imbalance
                         best_ce_distance = ce_dist
                         best_pe_distance = pe_dist
+                        best_combo = {
+                            'call_strike': call_strike,
+                            'put_strike': put_strike,
+                            'call_bid': call_bid,
+                            'put_bid': put_bid,
+                            'imbalance': imbalance,
+                            'imbalance_pct': imbalance_pct
+                        }
                         
                         # Determine reason
-                        if ce_dist == pe_dist:
-                            if imbalance <= 5:
-                                selection_reason = f"Symmetric + Delta balanced (Δ${imbalance:.2f})"
-                            else:
-                                selection_reason = f"Symmetric positioning ({ce_dist} strikes)"
+                        if imbalance <= 3:
+                            selection_reason = f"DELTA NEUTRAL (Δ${imbalance:.2f}, {imbalance_pct:.1f}%)"
+                        elif imbalance <= 5:
+                            selection_reason = f"Near delta neutral (Δ${imbalance:.2f}, {imbalance_pct:.1f}%)"
                         else:
-                            if imbalance <= 5:
-                                selection_reason = f"Asymmetric for delta neutrality (CE +{ce_dist}, PE -{pe_dist}, Δ${imbalance:.2f})"
-                            else:
-                                selection_reason = f"Asymmetric positioning (CE +{ce_dist}, PE -{pe_dist})"
+                            selection_reason = f"Best available balance (Δ${imbalance:.2f}, {imbalance_pct:.1f}%)"
+                        
+                        if ce_dist != pe_dist:
+                            selection_reason += f" via asymmetric strikes (CE +{ce_dist}, PE -{pe_dist})"
+                        else:
+                            selection_reason += f" with symmetric strikes ({ce_dist})"
+                        
+                        log_print(f"    -> *** NEW BEST: {selection_reason}", f)
+            
+            log_print("-" * 160, f)
+            log_print("", f)
+        else:
+            log_print(f"[WARNING] Insufficient strikes (need 13+ on each side)", f)
+            log_print("", f)
+        
+        # Fallback if no good combination found
+        if best_ce_distance is None or best_pe_distance is None:
+            log_print("[WARNING] No optimal strikes found (all premiums < $5), using minimum available", f)
+            best_ce_distance = min(13, max_call_strikes)
+            best_pe_distance = min(13, max_put_strikes)
+            selection_reason = f"Fallback: Insufficient premium (CE +{best_ce_distance}, PE -{best_pe_distance})"
+            log_print("", f)
         
         call_strike_target = all_strikes[atm_index + best_ce_distance]
         put_strike_target = all_strikes[atm_index - best_pe_distance]
+        
+        # Verification
+        log_print(f"FINAL SELECTION VERIFICATION:", f)
+        log_print(f"  ATM: ${atm_strike:,.0f} (index {atm_index})", f)
+        log_print(f"  CE: ${call_strike_target:,.0f} (+{best_ce_distance} strikes, ${call_strike_target - atm_strike:,.0f} above ATM)", f)
+        log_print(f"  PE: ${put_strike_target:,.0f} (-{best_pe_distance} strikes, ${atm_strike - put_strike_target:,.0f} below ATM)", f)
+        
+        if call_strike_target <= atm_strike:
+            log_print(f"  [ERROR] CE strike ${call_strike_target:,.0f} is NOT above ATM ${atm_strike:,.0f}!", f)
+        else:
+            log_print(f"  [✓] CE is correctly above ATM", f)
+            
+        if put_strike_target >= atm_strike:
+            log_print(f"  [ERROR] PE strike ${put_strike_target:,.0f} is NOT below ATM ${atm_strike:,.0f}!", f)
+        else:
+            log_print(f"  [✓] PE is correctly below ATM", f)
+        log_print("", f)
         
         call_opt = calls_by_strike.get(call_strike_target, {})
         put_opt = puts_by_strike.get(put_strike_target, {})
@@ -211,7 +267,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
         # SUMMARY
         # ═══════════════════════════════════════════════════════════════════
         
-        log_print(f"Spot: ${spot_price:,.2f} | ATM: ${atm_strike:,.0f} | Expiry: {expiry_date_str} | USD/INR: {usd_to_inr:.2f}", f)
+        log_print(f"Expiry: {expiry_date_str} | USD/INR: {usd_to_inr:.2f}", f)
         log_print("", f)
         
         # STRIKE SELECTION INFO
