@@ -404,11 +404,4 @@ with open(log_file, 'w', encoding='utf-8') as f:
 print(f"\n[SUCCESS] Saved to: {log_file}")
 ```
 
-**Now the table will show exactly like your image:**
-```
-╔════════════════════════════════════════════════════════════════════════════╗
-║ Position     Strikes         Premium @ 3:30   Combined Premium   Current Premium @ 06:48:30   Current Combined Premium   PnL                  ║
-╠════════════════════════════════════════════════════════════════════════════╣
-║ CALL          1,06,000       $40.00           $78.00              $20.00                       $44.00                     $34.00 (₹2,856)      ║
-║ PUT           1,02,000       $38.00                               $24.00                                                                       ║
-╚════════════════════════════════════════════════════════════════════════════╝
+
