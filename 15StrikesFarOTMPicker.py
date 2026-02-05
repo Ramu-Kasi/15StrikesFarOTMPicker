@@ -60,7 +60,6 @@ def load_trade_entry(expiry_date_str):
             return json.load(f)
     return None
 
-# Ensure file is created even if there's an error
 with open(log_file, 'w', encoding='utf-8') as f:
     try:
         usd_to_inr = get_current_usd_inr_rate()
@@ -119,116 +118,97 @@ with open(log_file, 'w', encoding='utf-8') as f:
         atm_strike = min(all_strikes, key=lambda x: abs(x - spot_price))
         atm_index = all_strikes.index(atm_strike)
         
-        log_print(f"Spot: ${spot_price:,.2f} | ATM: ${atm_strike:,.0f} (index {atm_index}) | Total strikes: {len(all_strikes)}", f)
+        log_print(f"Spot: ${spot_price:,.2f} | ATM: ${atm_strike:,.0f} | Expiry: {expiry_date_str} | USD/INR: {usd_to_inr:.2f}", f)
         log_print("", f)
         
         calls_by_strike = {float(c['strike_price']): c for c in calls}
         puts_by_strike = {float(p['strike_price']): p for p in puts}
         
-        # Find optimal strikes - PRIORITIZE DELTA NEUTRALITY
+        # Check if we have minimum 13 strikes on both sides
         max_call_strikes = len(all_strikes) - atm_index - 1
         max_put_strikes = atm_index
         
         log_print(f"Available strikes: {max_call_strikes} above ATM, {max_put_strikes} below ATM", f)
+        
+        # STRICT REQUIREMENT: Must have at least 13 strikes on BOTH sides
+        if max_call_strikes < 13 or max_put_strikes < 13:
+            log_print("", f)
+            log_print("[ERROR] INSUFFICIENT STRIKES FOR STRATEGY", f)
+            log_print(f"  Minimum required: 13 strikes on each side", f)
+            log_print(f"  Available: {max_call_strikes} above ATM, {max_put_strikes} below ATM", f)
+            log_print(f"  Cannot proceed with strike selection.", f)
+            log_print("", f)
+            log_print(f"Log saved to: {log_file}", f)
+            exit(0)
+        
         log_print("", f)
+        log_print("DELTA NEUTRALITY OPTIMIZATION (13-15 strike range):", f)
+        log_print("-" * 160, f)
         
         best_ce_distance = None
         best_pe_distance = None
         best_imbalance = float('inf')
         best_combo = None
-        selection_reason = "Not optimized"
+        selection_reason = ""
         
-        if max_call_strikes >= 13 and max_put_strikes >= 13:
-            log_print("DELTA NEUTRALITY OPTIMIZATION (13-15 strike range):", f)
-            log_print("Goal: Find strikes where CE premium ≈ PE premium (minimize imbalance)", f)
-            log_print("-" * 160, f)
-            
-            # Try ALL combinations from 13 to 15 on both sides
-            for ce_dist in range(13, min(16, max_call_strikes + 1)):
-                for pe_dist in range(13, min(16, max_put_strikes + 1)):
-                    call_strike = all_strikes[atm_index + ce_dist]
-                    put_strike = all_strikes[atm_index - pe_dist]
+        # Try combinations from 13 to 15 on both sides
+        for ce_dist in range(13, min(16, max_call_strikes + 1)):
+            for pe_dist in range(13, min(16, max_put_strikes + 1)):
+                call_strike = all_strikes[atm_index + ce_dist]
+                put_strike = all_strikes[atm_index - pe_dist]
+                
+                call_opt = calls_by_strike.get(call_strike, {})
+                put_opt = puts_by_strike.get(put_strike, {})
+                
+                call_bid = float(call_opt.get('quotes', {}).get('best_bid', 0))
+                put_bid = float(put_opt.get('quotes', {}).get('best_bid', 0))
+                
+                # Skip if premiums too low
+                if call_bid < 5 or put_bid < 5:
+                    log_print(f"  CE +{ce_dist} (${call_strike:,.0f}) | PE -{pe_dist} (${put_strike:,.0f}) -> SKIP (premium < $5)", f)
+                    continue
+                
+                # Calculate imbalance
+                imbalance = abs(call_bid - put_bid)
+                imbalance_pct = (imbalance / max(call_bid, put_bid) * 100)
+                
+                log_print(f"  CE +{ce_dist} (${call_strike:,.0f}, ${call_bid:.2f}) | PE -{pe_dist} (${put_strike:,.0f}, ${put_bid:.2f}) -> Δ${imbalance:.2f} ({imbalance_pct:.1f}%)", f)
+                
+                # Find best balance
+                if imbalance < best_imbalance:
+                    best_imbalance = imbalance
+                    best_ce_distance = ce_dist
+                    best_pe_distance = pe_dist
+                    best_combo = {
+                        'call_strike': call_strike,
+                        'put_strike': put_strike,
+                        'call_bid': call_bid,
+                        'put_bid': put_bid,
+                        'imbalance': imbalance,
+                        'imbalance_pct': imbalance_pct
+                    }
                     
-                    call_opt = calls_by_strike.get(call_strike, {})
-                    put_opt = puts_by_strike.get(put_strike, {})
+                    if ce_dist == pe_dist:
+                        selection_reason = f"Symmetric strikes ({ce_dist}), Δ${imbalance:.2f} ({imbalance_pct:.1f}%)"
+                    else:
+                        selection_reason = f"Asymmetric for delta neutrality (CE +{ce_dist}, PE -{pe_dist}), Δ${imbalance:.2f} ({imbalance_pct:.1f}%)"
                     
-                    call_bid = float(call_opt.get('quotes', {}).get('best_bid', 0))
-                    put_bid = float(put_opt.get('quotes', {}).get('best_bid', 0))
-                    
-                    # Skip if premiums too low
-                    if call_bid < 5 or put_bid < 5:
-                        log_print(f"  CE +{ce_dist} (${call_strike:,.0f}) | PE -{pe_dist} (${put_strike:,.0f}) -> SKIP (premium < $5)", f)
-                        continue
-                    
-                    # Calculate imbalance (delta neutrality metric)
-                    imbalance = abs(call_bid - put_bid)
-                    imbalance_pct = (imbalance / max(call_bid, put_bid) * 100)
-                    
-                    log_print(f"  CE +{ce_dist} (${call_strike:,.0f}, bid ${call_bid:.2f}) | PE -{pe_dist} (${put_strike:,.0f}, bid ${put_bid:.2f}) -> Δ${imbalance:.2f} ({imbalance_pct:.1f}%)", f)
-                    
-                    # PRIORITIZE DELTA NEUTRALITY - lowest imbalance wins
-                    # If imbalance is tied, prefer wider strikes
-                    if imbalance < best_imbalance:
-                        best_imbalance = imbalance
-                        best_ce_distance = ce_dist
-                        best_pe_distance = pe_dist
-                        best_combo = {
-                            'call_strike': call_strike,
-                            'put_strike': put_strike,
-                            'call_bid': call_bid,
-                            'put_bid': put_bid,
-                            'imbalance': imbalance,
-                            'imbalance_pct': imbalance_pct
-                        }
-                        
-                        # Determine reason
-                        if imbalance <= 3:
-                            selection_reason = f"DELTA NEUTRAL (Δ${imbalance:.2f}, {imbalance_pct:.1f}%)"
-                        elif imbalance <= 5:
-                            selection_reason = f"Near delta neutral (Δ${imbalance:.2f}, {imbalance_pct:.1f}%)"
-                        else:
-                            selection_reason = f"Best available balance (Δ${imbalance:.2f}, {imbalance_pct:.1f}%)"
-                        
-                        if ce_dist != pe_dist:
-                            selection_reason += f" via asymmetric strikes (CE +{ce_dist}, PE -{pe_dist})"
-                        else:
-                            selection_reason += f" with symmetric strikes ({ce_dist})"
-                        
-                        log_print(f"    -> *** NEW BEST: {selection_reason}", f)
-            
-            log_print("-" * 160, f)
-            log_print("", f)
-        else:
-            log_print(f"[WARNING] Insufficient strikes (need 13+ on each side)", f)
-            log_print("", f)
+                    log_print(f"    -> *** BEST: {selection_reason}", f)
         
-        # Fallback if no good combination found
+        log_print("-" * 160, f)
+        log_print("", f)
+        
+        # If no valid strikes found (all premiums < $5)
         if best_ce_distance is None or best_pe_distance is None:
-            log_print("[WARNING] No optimal strikes found (all premiums < $5), using minimum available", f)
-            best_ce_distance = min(13, max_call_strikes)
-            best_pe_distance = min(13, max_put_strikes)
-            selection_reason = f"Fallback: Insufficient premium (CE +{best_ce_distance}, PE -{best_pe_distance})"
+            log_print("[ERROR] NO VALID STRIKES FOUND", f)
+            log_print("  All strike combinations have premiums < $5", f)
+            log_print("  Cannot proceed with trade setup.", f)
             log_print("", f)
+            log_print(f"Log saved to: {log_file}", f)
+            exit(0)
         
         call_strike_target = all_strikes[atm_index + best_ce_distance]
         put_strike_target = all_strikes[atm_index - best_pe_distance]
-        
-        # Verification
-        log_print(f"FINAL SELECTION VERIFICATION:", f)
-        log_print(f"  ATM: ${atm_strike:,.0f} (index {atm_index})", f)
-        log_print(f"  CE: ${call_strike_target:,.0f} (+{best_ce_distance} strikes, ${call_strike_target - atm_strike:,.0f} above ATM)", f)
-        log_print(f"  PE: ${put_strike_target:,.0f} (-{best_pe_distance} strikes, ${atm_strike - put_strike_target:,.0f} below ATM)", f)
-        
-        if call_strike_target <= atm_strike:
-            log_print(f"  [ERROR] CE strike ${call_strike_target:,.0f} is NOT above ATM ${atm_strike:,.0f}!", f)
-        else:
-            log_print(f"  [✓] CE is correctly above ATM", f)
-            
-        if put_strike_target >= atm_strike:
-            log_print(f"  [ERROR] PE strike ${put_strike_target:,.0f} is NOT below ATM ${atm_strike:,.0f}!", f)
-        else:
-            log_print(f"  [✓] PE is correctly below ATM", f)
-        log_print("", f)
         
         call_opt = calls_by_strike.get(call_strike_target, {})
         put_opt = puts_by_strike.get(put_strike_target, {})
@@ -240,6 +220,8 @@ with open(log_file, 'w', encoding='utf-8') as f:
         call_ask = float(call_quotes.get('best_ask', 0))
         put_bid = float(put_quotes.get('best_bid', 0))
         put_ask = float(put_quotes.get('best_ask', 0))
+        
+        combined_premium = call_bid + put_bid
         
         # Check for trade entry (3:25-3:35 AM on Saturday)
         is_saturday = today.weekday() == 5
@@ -256,7 +238,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
                 'put_strike': put_strike_target,
                 'call_premium': call_bid,
                 'put_premium': put_bid,
-                'combined_premium': call_bid + put_bid,
+                'combined_premium': combined_premium,
                 'ce_distance': best_ce_distance,
                 'pe_distance': best_pe_distance,
                 'selection_reason': selection_reason
@@ -267,158 +249,60 @@ with open(log_file, 'w', encoding='utf-8') as f:
         # SUMMARY
         # ═══════════════════════════════════════════════════════════════════
         
-        log_print(f"Expiry: {expiry_date_str} | USD/INR: {usd_to_inr:.2f}", f)
-        log_print("", f)
-        
-        # STRIKE SELECTION INFO
         log_print("STRIKE SELECTION:", f)
         log_print("-" * 160, f)
-        if trade_entry and 'ce_distance' in trade_entry and 'pe_distance' in trade_entry:
-            log_print(f"Selected Strikes: CE +{trade_entry['ce_distance']} strikes from ATM (${int(trade_entry['call_strike']):,}), PE -{trade_entry['pe_distance']} strikes from ATM (${int(trade_entry['put_strike']):,})", f)
-            log_print(f"Reason: {trade_entry.get('selection_reason', 'N/A')}", f)
-        else:
-            log_print(f"Selected Strikes: CE +{best_ce_distance} strikes from ATM (${int(call_strike_target):,}), PE -{best_pe_distance} strikes from ATM (${int(put_strike_target):,})", f)
-            log_print(f"Reason: {selection_reason}", f)
+        log_print(f"Selected: CE +{best_ce_distance} strikes (${int(call_strike_target):,}), PE -{best_pe_distance} strikes (${int(put_strike_target):,})", f)
+        log_print(f"Reason: {selection_reason}", f)
         log_print("-" * 160, f)
         log_print("", f)
         
-        current_time_str = today.strftime('%H:%M:%S')
+        # Simple table showing strikes and premiums
+        log_print("-" * 160, f)
+        log_print(f"{'Position':<12} | {'Strikes':<15} | {'Individual Premium':<20} | {'Combined Premium':<20}", f)
+        log_print("-" * 160, f)
+        log_print(f"{'CALL':<12} | {int(call_strike_target):>15,} | ${call_bid:>18.2f} | ${combined_premium:>18.2f}", f)
+        log_print(f"{'PUT':<12} | {int(put_strike_target):>15,} | ${put_bid:>18.2f} | {'':<20}", f)
+        log_print("-" * 160, f)
+        log_print("", f)
         
-        if trade_entry:
-            # Active trade - show entry vs current
-            call_entry = trade_entry['call_premium']
-            put_entry = trade_entry['put_premium']
-            combined_entry = trade_entry['combined_premium']
+        # Position sizing
+        log_print("POSITION SIZING:", f)
+        log_print("-" * 160, f)
+        log_print(f"{'Size':<22} | {'Margin':<15} | {'Premium Collected':<35} | {'Max Profit':<35} | {'Loss @ 5x SL':<35}", f)
+        log_print("-" * 160, f)
+        
+        btc_sizes = [1, 2, 5, 7, 10, 12]
+        for btc in btc_sizes:
+            margin = btc * 880
+            premium = combined_premium * btc
+            max_profit = premium - (btc * 0.10)
+            loss_5x = premium * 3
             
-            # Current buyback prices
-            call_current = call_ask
-            put_current = put_ask
-            combined_current = call_current + put_current
+            size_str = f"{btc} BTC ({btc * 1000:,} lots)"
+            margin_str = f"${margin:,}"
+            premium_str = f"${premium:,.2f} ({format_inr(premium * usd_to_inr)})"
+            profit_str = f"${max_profit:,.2f} ({format_inr(max_profit * usd_to_inr)})"
+            loss_str = f"-${loss_5x:,.2f} ({format_inr(loss_5x * usd_to_inr)})"
             
-            # PnL calculation (per 1 BTC)
-            pnl_usd = combined_entry - combined_current
-            pnl_inr = pnl_usd * usd_to_inr
-            
-            # Table header
-            log_print("-" * 160, f)
-            log_print(f"{'Position':<10} | {'Strikes':<12} | {'Premium @ 3:30':<18} | {'Combined Premium':<20} | {'Current Premium @ ' + current_time_str:<28} | {'Current Combined Premium':<30} | {'PnL':<30}", f)
-            log_print("-" * 160, f)
-            
-            # CALL row with combined values
-            log_print(f"{'CALL':<10} | {int(trade_entry['call_strike']):>12,} | ${call_entry:>16.2f} | ${combined_entry:>18.2f} | ${call_current:>26.2f} | ${combined_current:>28.2f} | ${pnl_usd:>+10.2f} ({format_inr(pnl_inr)})", f)
-            
-            # PUT row without combined values
-            log_print(f"{'PUT':<10} | {int(trade_entry['put_strike']):>12,} | ${put_entry:>16.2f} | {'':<20} | ${put_current:>26.2f} | {'':<30} | {'':<30}", f)
-            
-            log_print("-" * 160, f)
-            log_print("", f)
-            
-            # Position sizing breakdown
-            log_print("POSITION SIZE BREAKDOWN:", f)
-            log_print("-" * 160, f)
-            log_print(f"{'Size':<22} | {'Margin':<12} | {'Entry Premium':<20} | {'Current Cost':<20} | {'PnL (USD)':<20} | {'PnL (INR)':<25}", f)
-            log_print("-" * 160, f)
-            
-            btc_sizes = [1, 2, 5, 7, 10, 12]
-            for btc in btc_sizes:
-                margin = btc * 880
-                entry_prem = combined_entry * btc
-                current_cost = combined_current * btc
-                pnl_btc_usd = pnl_usd * btc
-                pnl_btc_inr = pnl_btc_usd * usd_to_inr
-                
-                size_str = f"{btc} BTC ({btc * 1000:,} lots)"
-                
-                log_print(f"{size_str:<22} | ${margin:>11,} | ${entry_prem:>18.2f} | ${current_cost:>18.2f} | ${pnl_btc_usd:>+18.2f} | {format_inr(pnl_btc_inr):<25}", f)
-            
-            log_print("-" * 160, f)
-            log_print("", f)
-            
-            # Exit trigger status
-            log_print("EXIT TRIGGER STATUS:", f)
-            log_print("-" * 160, f)
-            
-            call_5x = call_entry * 5
-            put_5x = put_entry * 5
-            loss_1_5x = combined_entry * 1.5
-            
-            if call_current >= call_5x or put_current >= put_5x:
-                log_print("[✗✗✗] STOP LOSS HIT (5x) - CLOSE BOTH LEGS IMMEDIATELY!", f)
-            else:
-                log_print(f"[✓] Stop Loss (5x): CE ${call_5x:.2f} | PE ${put_5x:.2f} - NOT HIT", f)
-            
-            if combined_current >= loss_1_5x:
-                log_print("[✗✗] LOSS LIMIT (1.5x) - CONSIDER CLOSING", f)
-            else:
-                log_print(f"[✓] Loss Limit (1.5x): ${loss_1_5x:.2f} - NOT HIT", f)
-            
-            exit_time = today.replace(hour=17, minute=15, second=0, microsecond=0)
-            if today >= exit_time:
-                log_print("[!] Time Exit: Past 5:15 PM - CLOSE POSITION NOW", f)
-            else:
-                time_remaining = exit_time - today
-                hours = time_remaining.seconds // 3600
-                minutes = (time_remaining.seconds % 3600) // 60
-                log_print(f"[✓] Time Remaining: {hours}h {minutes}m until 5:15 PM exit", f)
-            
-            log_print("-" * 160, f)
-            log_print("", f)
-            
+            log_print(f"{size_str:<22} | {margin_str:<15} | {premium_str:<35} | {profit_str:<35} | {loss_str:<35}", f)
+        
+        log_print("-" * 160, f)
+        log_print("", f)
+        
+        # Exit rules
+        log_print("EXIT RULES:", f)
+        log_print("-" * 160, f)
+        log_print(f"  1. Stop Loss (5x): CE >= ${call_bid * 5:.2f} OR PE >= ${put_bid * 5:.2f}", f)
+        log_print(f"  2. Loss Limit (1.5x): Buyback cost >= ${combined_premium * 1.5:.2f}", f)
+        log_print(f"  3. Time Exit: 5:15 PM IST", f)
+        log_print("-" * 160, f)
+        log_print("", f)
+        
+        # Status
+        if is_saturday:
+            log_print("[INFO] TODAY IS SATURDAY - Ready to trade at 3:30 AM", f)
         else:
-            # No active trade - show current setup
-            combined_premium = call_bid + put_bid
-            
-            # Table header
-            log_print("-" * 160, f)
-            log_print(f"{'Position':<10} | {'Strikes':<12} | {'Premium @ 3:30':<18} | {'Combined Premium':<20} | {'Current Premium @ ' + current_time_str:<28} | {'Current Combined Premium':<30} | {'PnL':<15}", f)
-            log_print("-" * 160, f)
-            
-            # CALL row with combined values
-            log_print(f"{'CALL':<10} | {int(call_strike_target):>12,} | {'-':<18} | {'-':<20} | ${call_bid:>26.2f} | ${combined_premium:>28.2f} | {'-':<15}", f)
-            
-            # PUT row without combined values
-            log_print(f"{'PUT':<10} | {int(put_strike_target):>12,} | {'-':<18} | {'':<20} | ${put_bid:>26.2f} | {'':<30} | {'':<15}", f)
-            
-            log_print("-" * 160, f)
-            log_print("", f)
-            
-            # Potential returns
-            log_print("POTENTIAL RETURNS (if entered at current premiums):", f)
-            log_print("-" * 160, f)
-            log_print(f"{'Size':<22} | {'Margin':<12} | {'Premium Collected':<35} | {'Max Profit':<35} | {'Loss @ 5x SL':<35}", f)
-            log_print("-" * 160, f)
-            
-            btc_sizes = [1, 2, 5, 7, 10, 12]
-            for btc in btc_sizes:
-                margin = btc * 880
-                premium = combined_premium * btc
-                max_profit = premium - (btc * 0.10)
-                loss_5x = premium * 3
-                
-                size_str = f"{btc} BTC ({btc * 1000:,} lots)"
-                premium_str = f"${premium:,.2f} ({format_inr(premium * usd_to_inr)})"
-                profit_str = f"${max_profit:,.2f} ({format_inr(max_profit * usd_to_inr)})"
-                loss_str = f"-${loss_5x:,.2f} ({format_inr(loss_5x * usd_to_inr)})"
-                
-                log_print(f"{size_str:<22} | ${margin:>11,} | {premium_str:<35} | {profit_str:<35} | {loss_str:<35}", f)
-            
-            log_print("-" * 160, f)
-            log_print("", f)
-            
-            # Status
-            log_print("STATUS:", f)
-            log_print("-" * 160, f)
-            
-            if is_saturday:
-                log_print("[INFO] TODAY IS SATURDAY - Ready to trade at 3:30 AM", f)
-            else:
-                log_print(f"[INFO] Today is {today.strftime('%A')} - Monitoring only", f)
-            
-            log_print("[INFO] Run this script between 3:25-3:35 AM on Saturday to lock in entry prices", f)
-            
-            log_print("-" * 160, f)
-            log_print("", f)
-        
+            log_print(f"[INFO] Today is {today.strftime('%A')} - Monitoring only", f)
         log_print("", f)
         
         # ═══════════════════════════════════════════════════════════════════
@@ -438,8 +322,8 @@ with open(log_file, 'w', encoding='utf-8') as f:
         strikes_below = atm_index - start_index
         strikes_above = end_index - atm_index - 1
         
-        log_print(f"Displaying strikes: {strikes_below} below ATM, ATM, {strikes_above} above ATM", f)
-        log_print(f"Strike range: ${selected_strikes[0]:,.0f} to ${selected_strikes[-1]:,.0f}", f)
+        log_print(f"Displaying: {strikes_below} below ATM, ATM, {strikes_above} above ATM", f)
+        log_print(f"Range: ${selected_strikes[0]:,.0f} - ${selected_strikes[-1]:,.0f}", f)
         log_print("", f)
         
         log_print("=" * 160, f)
@@ -452,21 +336,18 @@ with open(log_file, 'w', encoding='utf-8') as f:
             call_opt_display = calls_by_strike.get(strike, {})
             put_opt_display = puts_by_strike.get(strike, {})
             
-            # Format call data
             call_symbol = call_opt_display.get('symbol', '-')[:22]
             call_quotes_display = call_opt_display.get('quotes', {})
             call_bid_display = f"${float(call_quotes_display.get('best_bid', 0)):,.2f}" if call_quotes_display.get('best_bid') else '-'
             call_ask_display = f"${float(call_quotes_display.get('best_ask', 0)):,.2f}" if call_quotes_display.get('best_ask') else '-'
             call_iv = call_quotes_display.get('ask_iv', '-')
             
-            # Format put data  
             put_symbol = put_opt_display.get('symbol', '-')[:22]
             put_quotes_display = put_opt_display.get('quotes', {})
             put_bid_display = f"${float(put_quotes_display.get('best_bid', 0)):,.2f}" if put_quotes_display.get('best_bid') else '-'
             put_ask_display = f"${float(put_quotes_display.get('best_ask', 0)):,.2f}" if put_quotes_display.get('best_ask') else '-'
             put_iv = put_quotes_display.get('ask_iv', '-')
             
-            # Highlight ATM and selected strikes
             marker = ""
             if strike == atm_strike:
                 marker = " <- ATM"
