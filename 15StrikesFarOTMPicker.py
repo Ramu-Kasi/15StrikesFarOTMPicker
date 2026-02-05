@@ -3,6 +3,7 @@ from datetime import datetime
 import pytz
 import os
 import json
+import traceback
 
 # Timezone setup
 IST = pytz.timezone('Asia/Kolkata')
@@ -25,6 +26,7 @@ def log_print(message, file):
     except UnicodeEncodeError:
         print(console_message.encode('ascii', errors='replace').decode('ascii'))
     file.write(message + "\n")
+    file.flush()  # Force write to disk
 
 def format_inr(amount):
     if amount >= 100000:
@@ -58,27 +60,33 @@ def load_trade_entry(expiry_date_str):
             return json.load(f)
     return None
 
+# Ensure file is created even if there's an error
 with open(log_file, 'w', encoding='utf-8') as f:
-    
-    usd_to_inr = get_current_usd_inr_rate()
-    today = datetime.now(IST)
-    expiry_cutoff_time = today.replace(hour=17, minute=30, second=0, microsecond=0)
-    
-    if today < expiry_cutoff_time:
-        target_expiry_date = today
-    else:
-        from datetime import timedelta
-        target_expiry_date = today + timedelta(days=1)
-    
-    expiry_date_str = target_expiry_date.strftime('%d-%m-%Y')
-    
     try:
+        usd_to_inr = get_current_usd_inr_rate()
+        today = datetime.now(IST)
+        expiry_cutoff_time = today.replace(hour=17, minute=30, second=0, microsecond=0)
+        
+        if today < expiry_cutoff_time:
+            target_expiry_date = today
+        else:
+            from datetime import timedelta
+            target_expiry_date = today + timedelta(days=1)
+        
+        expiry_date_str = target_expiry_date.strftime('%d-%m-%Y')
+        
+        log_print("=" * 160, f)
+        log_print(f"BTC SHORT STRANGLE - {today.strftime('%d-%m-%Y %H:%M:%S IST')}", f)
+        log_print("=" * 160, f)
+        log_print("", f)
+        
         # Get spot price
         ticker_url = f"{BASE_URL}/v2/tickers/BTCUSD"
         response = requests.get(ticker_url, timeout=10)
         if response.status_code != 200:
-            log_print(f"[ERROR] Failed to get spot price", f)
-            exit(1)
+            log_print(f"[ERROR] Failed to get spot price: {response.status_code}", f)
+            log_print(f"Response: {response.text}", f)
+            raise Exception("Failed to get spot price")
         
         spot_price = float(response.json()['result']['spot_price'])
         
@@ -92,12 +100,16 @@ with open(log_file, 'w', encoding='utf-8') as f:
         
         response = requests.get(option_chain_url, params=params, timeout=15)
         if response.status_code != 200:
-            log_print(f"[ERROR] Failed to get options", f)
-            exit(1)
+            log_print(f"[ERROR] Failed to get options: {response.status_code}", f)
+            log_print(f"Response: {response.text}", f)
+            raise Exception("Failed to get options")
         
         options = response.json()['result']
         if not options:
             log_print(f"[ERROR] No options for {expiry_date_str}", f)
+            log_print("", f)
+            log_print(f"Log saved to: {log_file}", f)
+            print(f"\n[INFO] No options available for {expiry_date_str}")
             exit(0)
         
         # Process options
@@ -196,20 +208,16 @@ with open(log_file, 'w', encoding='utf-8') as f:
             save_trade_entry(expiry_date_str, trade_entry)
         
         # ═══════════════════════════════════════════════════════════════════
-        # SUMMARY TABLE
+        # SUMMARY
         # ═══════════════════════════════════════════════════════════════════
         
-        log_print("", f)
-        log_print("=" * 160, f)
-        log_print(f"BTC SHORT STRANGLE - {today.strftime('%d-%m-%Y %H:%M:%S IST')}", f)
         log_print(f"Spot: ${spot_price:,.2f} | ATM: ${atm_strike:,.0f} | Expiry: {expiry_date_str} | USD/INR: {usd_to_inr:.2f}", f)
-        log_print("=" * 160, f)
         log_print("", f)
         
         # STRIKE SELECTION INFO
         log_print("STRIKE SELECTION:", f)
         log_print("-" * 160, f)
-        if trade_entry and 'ce_distance' in trade_entry:
+        if trade_entry and 'ce_distance' in trade_entry and 'pe_distance' in trade_entry:
             log_print(f"Selected Strikes: CE +{trade_entry['ce_distance']} strikes from ATM (${int(trade_entry['call_strike']):,}), PE -{trade_entry['pe_distance']} strikes from ATM (${int(trade_entry['put_strike']):,})", f)
             log_print(f"Reason: {trade_entry.get('selection_reason', 'N/A')}", f)
         else:
@@ -413,21 +421,17 @@ with open(log_file, 'w', encoding='utf-8') as f:
         
         log_print("=" * 160, f)
         log_print("", f)
+        log_print(f"Log saved to: {log_file}", f)
         
     except Exception as e:
-        log_print(f"[ERROR] {e}", f)
-        import traceback
+        log_print("", f)
+        log_print(f"[ERROR] {str(e)}", f)
+        log_print("", f)
+        log_print("TRACEBACK:", f)
         log_print(traceback.format_exc(), f)
-    
-    log_print(f"Log saved to: {log_file}", f)
+        log_print("", f)
+        log_print(f"Log saved to: {log_file}", f)
+        print(f"\n[ERROR] Script failed: {str(e)}")
+        print(traceback.format_exc())
 
 print(f"\n[SUCCESS] Saved to: {log_file}")
-```
-
-**Now you'll see above the table:**
-```
-STRIKE SELECTION:
-------------------------------------------------------------------------------------------------
-Selected Strikes: CE +13 strikes from ATM ($72,000), PE -13 strikes from ATM ($65,600)
-Reason: Symmetric + Delta balanced (Δ$0.70)
-------------------------------------------------------------------------------------------------
