@@ -180,14 +180,14 @@ with open(log_file, 'w', encoding='utf-8') as f:
             save_trade_entry(expiry_date_str, trade_entry)
         
         # ═══════════════════════════════════════════════════════════════════
-        # SUMMARY TABLE (EXACTLY LIKE YOUR IMAGE)
+        # SUMMARY TABLE
         # ═══════════════════════════════════════════════════════════════════
         
         log_print("", f)
-        log_print("╔" + "═" * 148 + "╗", f)
-        log_print("║" + f" BTC SHORT STRANGLE - {today.strftime('%d-%m-%Y %H:%M:%S IST')} ".center(148) + "║", f)
-        log_print("║" + f" Spot: ${spot_price:,.2f} | ATM: ${atm_strike:,.0f} | Expiry: {expiry_date_str} | USD/INR: {usd_to_inr:.2f} ".center(148) + "║", f)
-        log_print("╚" + "═" * 148 + "╝", f)
+        log_print("=" * 160, f)
+        log_print(f"BTC SHORT STRANGLE - {today.strftime('%d-%m-%Y %H:%M:%S IST')}", f)
+        log_print(f"Spot: ${spot_price:,.2f} | ATM: ${atm_strike:,.0f} | Expiry: {expiry_date_str} | USD/INR: {usd_to_inr:.2f}", f)
+        log_print("=" * 160, f)
         log_print("", f)
         
         current_time_str = today.strftime('%H:%M:%S')
@@ -207,25 +207,25 @@ with open(log_file, 'w', encoding='utf-8') as f:
             pnl_usd = combined_entry - combined_current
             pnl_inr = pnl_usd * usd_to_inr
             
-            log_print("╔" + "═" * 148 + "╗", f)
-            log_print("║" + f" {'Position':<12} {'Strikes':<15} {'Premium @ 3:30':<20} {'Combined Premium':<22} {'Current Premium @ ' + current_time_str:<30} {'Current Combined Premium':<30} {'PnL':<20} ".ljust(148) + "║", f)
-            log_print("╠" + "═" * 148 + "╣", f)
+            # Table header
+            log_print("-" * 160, f)
+            log_print(f"{'Position':<10} | {'Strikes':<12} | {'Premium @ 3:30':<18} | {'Combined Premium':<20} | {'Current Premium @ ' + current_time_str:<28} | {'Current Combined Premium':<30} | {'PnL':<30}", f)
+            log_print("-" * 160, f)
             
-            # First row - CALL with combined values
-            log_print("║" + f" {'CALL':<12} {str(int(trade_entry['call_strike'])):>10}     ${call_entry:<18.2f} ${combined_entry:<20.2f} ${call_current:<28.2f} ${combined_current:<28.2f} ${pnl_usd:+.2f} ({format_inr(pnl_inr)})".ljust(148) + "║", f)
+            # CALL row with combined values
+            log_print(f"{'CALL':<10} | {int(trade_entry['call_strike']):>12,} | ${call_entry:>16.2f} | ${combined_entry:>18.2f} | ${call_current:>26.2f} | ${combined_current:>28.2f} | ${pnl_usd:>+10.2f} ({format_inr(pnl_inr)})", f)
             
-            # Second row - PUT without combined values
-            log_print("║" + f" {'PUT':<12} {str(int(trade_entry['put_strike'])):>10}     ${put_entry:<18.2f} {'':22} ${put_current:<28.2f} {'':30} {'':20}".ljust(148) + "║", f)
+            # PUT row without combined values
+            log_print(f"{'PUT':<10} | {int(trade_entry['put_strike']):>12,} | ${put_entry:>16.2f} | {'':<20} | ${put_current:>26.2f} | {'':<30} | {'':<30}", f)
             
-            log_print("╚" + "═" * 148 + "╝", f)
+            log_print("-" * 160, f)
             log_print("", f)
             
             # Position sizing breakdown
-            log_print("╔" + "═" * 148 + "╗", f)
-            log_print("║" + " POSITION SIZE BREAKDOWN:".ljust(148) + "║", f)
-            log_print("╠" + "═" * 148 + "╣", f)
-            log_print("║" + f" {'Size':<20} {'Margin':<15} {'Entry Premium':<25} {'Current Cost':<25} {'PnL (USD)':<20} {'PnL (INR)':<20}".ljust(148) + "║", f)
-            log_print("║" + f" {'-' * 130}".ljust(148) + "║", f)
+            log_print("POSITION SIZE BREAKDOWN:", f)
+            log_print("-" * 160, f)
+            log_print(f"{'Size':<22} | {'Margin':<12} | {'Entry Premium':<20} | {'Current Cost':<20} | {'PnL (USD)':<20} | {'PnL (INR)':<25}", f)
+            log_print("-" * 160, f)
             
             btc_sizes = [1, 2, 5, 7, 10, 12]
             for btc in btc_sizes:
@@ -236,71 +236,65 @@ with open(log_file, 'w', encoding='utf-8') as f:
                 pnl_btc_inr = pnl_btc_usd * usd_to_inr
                 
                 size_str = f"{btc} BTC ({btc * 1000:,} lots)"
-                margin_str = f"${margin:,}"
-                entry_str = f"${entry_prem:,.2f}"
-                current_str = f"${current_cost:,.2f}"
-                pnl_usd_str = f"${pnl_btc_usd:+,.2f}"
-                pnl_inr_str = format_inr(pnl_btc_inr)
                 
-                log_print("║" + f" {size_str:<20} {margin_str:<15} {entry_str:<25} {current_str:<25} {pnl_usd_str:<20} {pnl_inr_str:<20}".ljust(148) + "║", f)
+                log_print(f"{size_str:<22} | ${margin:>11,} | ${entry_prem:>18.2f} | ${current_cost:>18.2f} | ${pnl_btc_usd:>+18.2f} | {format_inr(pnl_btc_inr):<25}", f)
             
-            log_print("╚" + "═" * 148 + "╝", f)
+            log_print("-" * 160, f)
             log_print("", f)
             
             # Exit trigger status
-            log_print("╔" + "═" * 148 + "╗", f)
-            log_print("║" + " EXIT TRIGGER STATUS:".ljust(148) + "║", f)
-            log_print("╠" + "═" * 148 + "╣", f)
+            log_print("EXIT TRIGGER STATUS:", f)
+            log_print("-" * 160, f)
             
             call_5x = call_entry * 5
             put_5x = put_entry * 5
             loss_1_5x = combined_entry * 1.5
             
             if call_current >= call_5x or put_current >= put_5x:
-                log_print("║" + " [✗✗✗] STOP LOSS HIT (5x) - CLOSE BOTH LEGS IMMEDIATELY!".ljust(148) + "║", f)
+                log_print("[✗✗✗] STOP LOSS HIT (5x) - CLOSE BOTH LEGS IMMEDIATELY!", f)
             else:
-                log_print("║" + f" [✓] Stop Loss (5x): CE ${call_5x:.2f} | PE ${put_5x:.2f} - NOT HIT".ljust(148) + "║", f)
+                log_print(f"[✓] Stop Loss (5x): CE ${call_5x:.2f} | PE ${put_5x:.2f} - NOT HIT", f)
             
             if combined_current >= loss_1_5x:
-                log_print("║" + " [✗✗] LOSS LIMIT (1.5x) - CONSIDER CLOSING".ljust(148) + "║", f)
+                log_print("[✗✗] LOSS LIMIT (1.5x) - CONSIDER CLOSING", f)
             else:
-                log_print("║" + f" [✓] Loss Limit (1.5x): ${loss_1_5x:.2f} - NOT HIT".ljust(148) + "║", f)
+                log_print(f"[✓] Loss Limit (1.5x): ${loss_1_5x:.2f} - NOT HIT", f)
             
             exit_time = today.replace(hour=17, minute=15, second=0, microsecond=0)
             if today >= exit_time:
-                log_print("║" + " [!] Time Exit: Past 5:15 PM - CLOSE POSITION NOW".ljust(148) + "║", f)
+                log_print("[!] Time Exit: Past 5:15 PM - CLOSE POSITION NOW", f)
             else:
                 time_remaining = exit_time - today
                 hours = time_remaining.seconds // 3600
                 minutes = (time_remaining.seconds % 3600) // 60
-                log_print("║" + f" [✓] Time Remaining: {hours}h {minutes}m until 5:15 PM exit".ljust(148) + "║", f)
+                log_print(f"[✓] Time Remaining: {hours}h {minutes}m until 5:15 PM exit", f)
             
-            log_print("╚" + "═" * 148 + "╝", f)
+            log_print("-" * 160, f)
             log_print("", f)
             
         else:
             # No active trade - show current setup
             combined_premium = call_bid + put_bid
             
-            log_print("╔" + "═" * 148 + "╗", f)
-            log_print("║" + f" {'Position':<12} {'Strikes':<15} {'Premium @ 3:30':<20} {'Combined Premium':<22} {'Current Premium @ ' + current_time_str:<30} {'Current Combined Premium':<30} {'PnL':<20} ".ljust(148) + "║", f)
-            log_print("╠" + "═" * 148 + "╣", f)
+            # Table header
+            log_print("-" * 160, f)
+            log_print(f"{'Position':<10} | {'Strikes':<12} | {'Premium @ 3:30':<18} | {'Combined Premium':<20} | {'Current Premium @ ' + current_time_str:<28} | {'Current Combined Premium':<30} | {'PnL':<15}", f)
+            log_print("-" * 160, f)
             
-            # First row - CALL with combined values
-            log_print("║" + f" {'CALL':<12} {str(int(call_strike_target)):>10}     {'-':<18}  {'-':<20}  ${call_bid:<28.2f} ${combined_premium:<28.2f} {'-':<20}".ljust(148) + "║", f)
+            # CALL row with combined values
+            log_print(f"{'CALL':<10} | {int(call_strike_target):>12,} | {'-':<18} | {'-':<20} | ${call_bid:>26.2f} | ${combined_premium:>28.2f} | {'-':<15}", f)
             
-            # Second row - PUT without combined values
-            log_print("║" + f" {'PUT':<12} {str(int(put_strike_target)):>10}     {'-':<18}  {'':22}  ${put_bid:<28.2f} {'':30} {'':20}".ljust(148) + "║", f)
+            # PUT row without combined values
+            log_print(f"{'PUT':<10} | {int(put_strike_target):>12,} | {'-':<18} | {'':<20} | ${put_bid:>26.2f} | {'':<30} | {'':<15}", f)
             
-            log_print("╚" + "═" * 148 + "╝", f)
+            log_print("-" * 160, f)
             log_print("", f)
             
             # Potential returns
-            log_print("╔" + "═" * 148 + "╗", f)
-            log_print("║" + " POTENTIAL RETURNS (if entered at current premiums):".ljust(148) + "║", f)
-            log_print("╠" + "═" * 148 + "╣", f)
-            log_print("║" + f" {'Size':<20} {'Margin':<15} {'Premium Collected':<25} {'Max Profit':<25} {'Loss @ 5x SL':<25}".ljust(148) + "║", f)
-            log_print("║" + f" {'-' * 130}".ljust(148) + "║", f)
+            log_print("POTENTIAL RETURNS (if entered at current premiums):", f)
+            log_print("-" * 160, f)
+            log_print(f"{'Size':<22} | {'Margin':<12} | {'Premium Collected':<35} | {'Max Profit':<35} | {'Loss @ 5x SL':<35}", f)
+            log_print("-" * 160, f)
             
             btc_sizes = [1, 2, 5, 7, 10, 12]
             for btc in btc_sizes:
@@ -310,40 +304,38 @@ with open(log_file, 'w', encoding='utf-8') as f:
                 loss_5x = premium * 3
                 
                 size_str = f"{btc} BTC ({btc * 1000:,} lots)"
-                margin_str = f"${margin:,}"
                 premium_str = f"${premium:,.2f} ({format_inr(premium * usd_to_inr)})"
                 profit_str = f"${max_profit:,.2f} ({format_inr(max_profit * usd_to_inr)})"
                 loss_str = f"-${loss_5x:,.2f} ({format_inr(loss_5x * usd_to_inr)})"
                 
-                log_print("║" + f" {size_str:<20} {margin_str:<15} {premium_str:<25} {profit_str:<25} {loss_str:<25}".ljust(148) + "║", f)
+                log_print(f"{size_str:<22} | ${margin:>11,} | {premium_str:<35} | {profit_str:<35} | {loss_str:<35}", f)
             
-            log_print("╚" + "═" * 148 + "╝", f)
+            log_print("-" * 160, f)
             log_print("", f)
             
             # Status
-            log_print("╔" + "═" * 148 + "╗", f)
-            log_print("║" + " STATUS:".ljust(148) + "║", f)
-            log_print("╠" + "═" * 148 + "╣", f)
+            log_print("STATUS:", f)
+            log_print("-" * 160, f)
             
             if is_saturday:
-                log_print("║" + " [INFO] TODAY IS SATURDAY - Ready to trade at 3:30 AM".ljust(148) + "║", f)
+                log_print("[INFO] TODAY IS SATURDAY - Ready to trade at 3:30 AM", f)
             else:
-                log_print("║" + f" [INFO] Today is {today.strftime('%A')} - Monitoring only".ljust(148) + "║", f)
+                log_print(f"[INFO] Today is {today.strftime('%A')} - Monitoring only", f)
             
-            log_print("║" + " [INFO] Run this script between 3:25-3:35 AM on Saturday to lock in entry prices".ljust(148) + "║", f)
+            log_print("[INFO] Run this script between 3:25-3:35 AM on Saturday to lock in entry prices", f)
             
-            log_print("╚" + "═" * 148 + "╝", f)
+            log_print("-" * 160, f)
             log_print("", f)
         
         log_print("", f)
         
         # ═══════════════════════════════════════════════════════════════════
-        # FULL OPTION CHAIN (AS IN ORIGINAL VERSION)
+        # FULL OPTION CHAIN
         # ═══════════════════════════════════════════════════════════════════
         
-        log_print("=" * 150, f)
+        log_print("=" * 160, f)
         log_print("FULL OPTION CHAIN", f)
-        log_print("=" * 150, f)
+        log_print("=" * 160, f)
         log_print("", f)
         
         # Display ATM +/- 15 strikes
@@ -358,25 +350,25 @@ with open(log_file, 'w', encoding='utf-8') as f:
         log_print(f"Strike range: ${selected_strikes[0]:,.0f} to ${selected_strikes[-1]:,.0f}", f)
         log_print("", f)
         
-        log_print("=" * 150, f)
-        log_print(f"{'CALL OPTIONS (CE)':<75} | {'PUT OPTIONS (PE)':<75}", f)
-        log_print("=" * 150, f)
-        log_print(f"{'Symbol':<20} | {'Strike':<10} | {'Bid':<10} | {'Ask':<10} | {'IV':<10} | {'Symbol':<20} | {'Strike':<10} | {'Bid':<10} | {'Ask':<10} | {'IV':<10}", f)
-        log_print("-" * 150, f)
+        log_print("=" * 160, f)
+        log_print(f"{'CALL OPTIONS (CE)':<77} | {'PUT OPTIONS (PE)':<77}", f)
+        log_print("=" * 160, f)
+        log_print(f"{'Symbol':<22} | {'Strike':<12} | {'Bid':<12} | {'Ask':<12} | {'IV':<10} | {'Symbol':<22} | {'Strike':<12} | {'Bid':<12} | {'Ask':<12} | {'IV':<10}", f)
+        log_print("-" * 160, f)
         
         for strike in selected_strikes:
             call_opt_display = calls_by_strike.get(strike, {})
             put_opt_display = puts_by_strike.get(strike, {})
             
             # Format call data
-            call_symbol = call_opt_display.get('symbol', '-')[:20]
+            call_symbol = call_opt_display.get('symbol', '-')[:22]
             call_quotes_display = call_opt_display.get('quotes', {})
             call_bid_display = f"${float(call_quotes_display.get('best_bid', 0)):,.2f}" if call_quotes_display.get('best_bid') else '-'
             call_ask_display = f"${float(call_quotes_display.get('best_ask', 0)):,.2f}" if call_quotes_display.get('best_ask') else '-'
             call_iv = call_quotes_display.get('ask_iv', '-')
             
             # Format put data  
-            put_symbol = put_opt_display.get('symbol', '-')[:20]
+            put_symbol = put_opt_display.get('symbol', '-')[:22]
             put_quotes_display = put_opt_display.get('quotes', {})
             put_bid_display = f"${float(put_quotes_display.get('best_bid', 0)):,.2f}" if put_quotes_display.get('best_bid') else '-'
             put_ask_display = f"${float(put_quotes_display.get('best_ask', 0)):,.2f}" if put_quotes_display.get('best_ask') else '-'
@@ -389,9 +381,9 @@ with open(log_file, 'w', encoding='utf-8') as f:
             elif strike == call_strike_target or strike == put_strike_target:
                 marker = " <- SELECTED"
             
-            log_print(f"{call_symbol:<20} | ${strike:<9,.0f} | {call_bid_display:<10} | {call_ask_display:<10} | {call_iv:<10} | {put_symbol:<20} | ${strike:<9,.0f} | {put_bid_display:<10} | {put_ask_display:<10} | {put_iv:<10}{marker}", f)
+            log_print(f"{call_symbol:<22} | ${strike:>11,.0f} | {call_bid_display:<12} | {call_ask_display:<12} | {call_iv:<10} | {put_symbol:<22} | ${strike:>11,.0f} | {put_bid_display:<12} | {put_ask_display:<12} | {put_iv:<10}{marker}", f)
         
-        log_print("=" * 150, f)
+        log_print("=" * 160, f)
         log_print("", f)
         
     except Exception as e:
@@ -402,13 +394,3 @@ with open(log_file, 'w', encoding='utf-8') as f:
     log_print(f"Log saved to: {log_file}", f)
 
 print(f"\n[SUCCESS] Saved to: {log_file}")
-```
-
-**Now the table will show exactly like your image:**
-```
-╔════════════════════════════════════════════════════════════════════════════╗
-║ Position     Strikes         Premium @ 3:30   Combined Premium   Current Premium @ 06:48:30   Current Combined Premium   PnL                  ║
-╠════════════════════════════════════════════════════════════════════════════╣
-║ CALL          1,06,000       $40.00           $78.00              $20.00                       $44.00                     $34.00 (₹2,856)      ║
-║ PUT           1,02,000       $38.00                               $24.00                                                                       ║
-╚════════════════════════════════════════════════════════════════════════════╝
