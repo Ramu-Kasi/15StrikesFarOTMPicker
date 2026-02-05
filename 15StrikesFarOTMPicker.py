@@ -120,6 +120,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
         
         best_ce_distance = 13
         best_pe_distance = 13
+        selection_reason = "Symmetric positioning (13 strikes)"
         
         if max_call_strikes >= 13 and max_put_strikes >= 13:
             best_imbalance = float('inf')
@@ -145,6 +146,18 @@ with open(log_file, 'w', encoding='utf-8') as f:
                         best_imbalance = score
                         best_ce_distance = ce_dist
                         best_pe_distance = pe_dist
+                        
+                        # Determine reason
+                        if ce_dist == pe_dist:
+                            if imbalance <= 5:
+                                selection_reason = f"Symmetric + Delta balanced (Δ${imbalance:.2f})"
+                            else:
+                                selection_reason = f"Symmetric positioning ({ce_dist} strikes)"
+                        else:
+                            if imbalance <= 5:
+                                selection_reason = f"Asymmetric for delta neutrality (CE +{ce_dist}, PE -{pe_dist}, Δ${imbalance:.2f})"
+                            else:
+                                selection_reason = f"Asymmetric positioning (CE +{ce_dist}, PE -{pe_dist})"
         
         call_strike_target = all_strikes[atm_index + best_ce_distance]
         put_strike_target = all_strikes[atm_index - best_pe_distance]
@@ -175,7 +188,10 @@ with open(log_file, 'w', encoding='utf-8') as f:
                 'put_strike': put_strike_target,
                 'call_premium': call_bid,
                 'put_premium': put_bid,
-                'combined_premium': call_bid + put_bid
+                'combined_premium': call_bid + put_bid,
+                'ce_distance': best_ce_distance,
+                'pe_distance': best_pe_distance,
+                'selection_reason': selection_reason
             }
             save_trade_entry(expiry_date_str, trade_entry)
         
@@ -188,6 +204,18 @@ with open(log_file, 'w', encoding='utf-8') as f:
         log_print(f"BTC SHORT STRANGLE - {today.strftime('%d-%m-%Y %H:%M:%S IST')}", f)
         log_print(f"Spot: ${spot_price:,.2f} | ATM: ${atm_strike:,.0f} | Expiry: {expiry_date_str} | USD/INR: {usd_to_inr:.2f}", f)
         log_print("=" * 160, f)
+        log_print("", f)
+        
+        # STRIKE SELECTION INFO
+        log_print("STRIKE SELECTION:", f)
+        log_print("-" * 160, f)
+        if trade_entry and 'ce_distance' in trade_entry:
+            log_print(f"Selected Strikes: CE +{trade_entry['ce_distance']} strikes from ATM (${int(trade_entry['call_strike']):,}), PE -{trade_entry['pe_distance']} strikes from ATM (${int(trade_entry['put_strike']):,})", f)
+            log_print(f"Reason: {trade_entry.get('selection_reason', 'N/A')}", f)
+        else:
+            log_print(f"Selected Strikes: CE +{best_ce_distance} strikes from ATM (${int(call_strike_target):,}), PE -{best_pe_distance} strikes from ATM (${int(put_strike_target):,})", f)
+            log_print(f"Reason: {selection_reason}", f)
+        log_print("-" * 160, f)
         log_print("", f)
         
         current_time_str = today.strftime('%H:%M:%S')
@@ -394,3 +422,12 @@ with open(log_file, 'w', encoding='utf-8') as f:
     log_print(f"Log saved to: {log_file}", f)
 
 print(f"\n[SUCCESS] Saved to: {log_file}")
+```
+
+**Now you'll see above the table:**
+```
+STRIKE SELECTION:
+------------------------------------------------------------------------------------------------
+Selected Strikes: CE +13 strikes from ATM ($72,000), PE -13 strikes from ATM ($65,600)
+Reason: Symmetric + Delta balanced (Δ$0.70)
+------------------------------------------------------------------------------------------------
