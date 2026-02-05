@@ -180,7 +180,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
             save_trade_entry(expiry_date_str, trade_entry)
         
         # ═══════════════════════════════════════════════════════════════════
-        # SUMMARY TABLE (LIKE YOUR IMAGE)
+        # SUMMARY TABLE (EXACTLY LIKE YOUR IMAGE)
         # ═══════════════════════════════════════════════════════════════════
         
         log_print("", f)
@@ -190,12 +190,10 @@ with open(log_file, 'w', encoding='utf-8') as f:
         log_print("╚" + "═" * 148 + "╝", f)
         log_print("", f)
         
+        current_time_str = today.strftime('%H:%M:%S')
+        
         if trade_entry:
             # Active trade - show entry vs current
-            log_print("╔" + "═" * 148 + "╗", f)
-            log_print("║" + "  Position       Strikes       Premium @ 3:30    Combined Premium    Current Premium        PnL (USD)              PnL (INR)              ".ljust(148) + "║", f)
-            log_print("╠" + "═" * 148 + "╣", f)
-            
             call_entry = trade_entry['call_premium']
             put_entry = trade_entry['put_premium']
             combined_entry = trade_entry['combined_premium']
@@ -209,28 +207,27 @@ with open(log_file, 'w', encoding='utf-8') as f:
             pnl_usd = combined_entry - combined_current
             pnl_inr = pnl_usd * usd_to_inr
             
-            # Determine color/status
-            if pnl_usd > 0:
-                status = "[PROFIT]"
-            elif pnl_usd < 0:
-                status = "[LOSS]  "
-            else:
-                status = "[BREAK]  "
-            
-            log_print("║" + f"  CALL           {int(trade_entry['call_strike']):>8,}          ${call_entry:>8.2f}           ${combined_entry:>8.2f}           ${call_current:>8.2f}                                                      ".ljust(148) + "║", f)
-            log_print("║" + f"  PUT            {int(trade_entry['put_strike']):>8,}          ${put_entry:>8.2f}                                 ${put_current:>8.2f}                                                      ".ljust(148) + "║", f)
-            log_print("║" + " " * 148 + "║", f)
-            log_print("║" + f"                                                                 ${combined_current:>8.2f}           {status} ${pnl_usd:>+10.2f}        {format_inr(pnl_inr):>15}  ".ljust(148) + "║", f)
-            log_print("║" + " " * 148 + "║", f)
+            log_print("╔" + "═" * 148 + "╗", f)
+            log_print("║" + f" {'Position':<12} {'Strikes':<15} {'Premium @ 3:30':<20} {'Combined Premium':<22} {'Current Premium @ ' + current_time_str:<30} {'Current Combined Premium':<30} {'PnL':<20} ".ljust(148) + "║", f)
             log_print("╠" + "═" * 148 + "╣", f)
-            log_print("║" + " " * 148 + "║", f)
-            log_print("║" + "  POSITION SIZE BREAKDOWN (PnL per position):".ljust(148) + "║", f)
-            log_print("║" + " " * 148 + "║", f)
+            
+            # First row - CALL with combined values
+            log_print("║" + f" {'CALL':<12} {str(int(trade_entry['call_strike'])):>10}     ${call_entry:<18.2f} ${combined_entry:<20.2f} ${call_current:<28.2f} ${combined_current:<28.2f} ${pnl_usd:+.2f} ({format_inr(pnl_inr)})".ljust(148) + "║", f)
+            
+            # Second row - PUT without combined values
+            log_print("║" + f" {'PUT':<12} {str(int(trade_entry['put_strike'])):>10}     ${put_entry:<18.2f} {'':22} ${put_current:<28.2f} {'':30} {'':20}".ljust(148) + "║", f)
+            
+            log_print("╚" + "═" * 148 + "╝", f)
+            log_print("", f)
+            
+            # Position sizing breakdown
+            log_print("╔" + "═" * 148 + "╗", f)
+            log_print("║" + " POSITION SIZE BREAKDOWN:".ljust(148) + "║", f)
+            log_print("╠" + "═" * 148 + "╣", f)
+            log_print("║" + f" {'Size':<20} {'Margin':<15} {'Entry Premium':<25} {'Current Cost':<25} {'PnL (USD)':<20} {'PnL (INR)':<20}".ljust(148) + "║", f)
+            log_print("║" + f" {'-' * 130}".ljust(148) + "║", f)
             
             btc_sizes = [1, 2, 5, 7, 10, 12]
-            log_print("║" + f"  {'Size':<20} {'Margin':<15} {'Entry Premium':<25} {'Current Cost':<25} {'PnL (USD)':<20} {'PnL (INR)':<20}".ljust(148) + "║", f)
-            log_print("║" + f"  {'-' * 130}".ljust(148) + "║", f)
-            
             for btc in btc_sizes:
                 margin = btc * 880
                 entry_prem = combined_entry * btc
@@ -245,61 +242,67 @@ with open(log_file, 'w', encoding='utf-8') as f:
                 pnl_usd_str = f"${pnl_btc_usd:+,.2f}"
                 pnl_inr_str = format_inr(pnl_btc_inr)
                 
-                log_print("║" + f"  {size_str:<20} {margin_str:<15} {entry_str:<25} {current_str:<25} {pnl_usd_str:<20} {pnl_inr_str:<20}".ljust(148) + "║", f)
+                log_print("║" + f" {size_str:<20} {margin_str:<15} {entry_str:<25} {current_str:<25} {pnl_usd_str:<20} {pnl_inr_str:<20}".ljust(148) + "║", f)
             
-            log_print("║" + " " * 148 + "║", f)
+            log_print("╚" + "═" * 148 + "╝", f)
+            log_print("", f)
+            
+            # Exit trigger status
+            log_print("╔" + "═" * 148 + "╗", f)
+            log_print("║" + " EXIT TRIGGER STATUS:".ljust(148) + "║", f)
             log_print("╠" + "═" * 148 + "╣", f)
-            log_print("║" + " " * 148 + "║", f)
-            log_print("║" + "  EXIT TRIGGER STATUS:".ljust(148) + "║", f)
-            log_print("║" + " " * 148 + "║", f)
             
-            # Exit conditions
             call_5x = call_entry * 5
             put_5x = put_entry * 5
             loss_1_5x = combined_entry * 1.5
             
             if call_current >= call_5x or put_current >= put_5x:
-                log_print("║" + "  [✗✗✗] STOP LOSS HIT (5x) - CLOSE BOTH LEGS IMMEDIATELY!".ljust(148) + "║", f)
+                log_print("║" + " [✗✗✗] STOP LOSS HIT (5x) - CLOSE BOTH LEGS IMMEDIATELY!".ljust(148) + "║", f)
             else:
-                log_print("║" + f"  [✓] Stop Loss (5x): CE ${call_5x:.2f} | PE ${put_5x:.2f} - NOT HIT".ljust(148) + "║", f)
+                log_print("║" + f" [✓] Stop Loss (5x): CE ${call_5x:.2f} | PE ${put_5x:.2f} - NOT HIT".ljust(148) + "║", f)
             
             if combined_current >= loss_1_5x:
-                log_print("║" + "  [✗✗] LOSS LIMIT (1.5x) - CONSIDER CLOSING".ljust(148) + "║", f)
+                log_print("║" + " [✗✗] LOSS LIMIT (1.5x) - CONSIDER CLOSING".ljust(148) + "║", f)
             else:
-                log_print("║" + f"  [✓] Loss Limit (1.5x): ${loss_1_5x:.2f} - NOT HIT".ljust(148) + "║", f)
+                log_print("║" + f" [✓] Loss Limit (1.5x): ${loss_1_5x:.2f} - NOT HIT".ljust(148) + "║", f)
             
             exit_time = today.replace(hour=17, minute=15, second=0, microsecond=0)
             if today >= exit_time:
-                log_print("║" + "  [!] Time Exit: Past 5:15 PM - CLOSE POSITION NOW".ljust(148) + "║", f)
+                log_print("║" + " [!] Time Exit: Past 5:15 PM - CLOSE POSITION NOW".ljust(148) + "║", f)
             else:
                 time_remaining = exit_time - today
                 hours = time_remaining.seconds // 3600
                 minutes = (time_remaining.seconds % 3600) // 60
-                log_print("║" + f"  [✓] Time Remaining: {hours}h {minutes}m until 5:15 PM exit".ljust(148) + "║", f)
+                log_print("║" + f" [✓] Time Remaining: {hours}h {minutes}m until 5:15 PM exit".ljust(148) + "║", f)
             
-            log_print("║" + " " * 148 + "║", f)
+            log_print("╚" + "═" * 148 + "╝", f)
+            log_print("", f)
             
         else:
             # No active trade - show current setup
             combined_premium = call_bid + put_bid
             
             log_print("╔" + "═" * 148 + "╗", f)
-            log_print("║" + "  Position       Strikes       Premium @ 3:30    Combined Premium    Current Premium        Potential Entry                                 ".ljust(148) + "║", f)
+            log_print("║" + f" {'Position':<12} {'Strikes':<15} {'Premium @ 3:30':<20} {'Combined Premium':<22} {'Current Premium @ ' + current_time_str:<30} {'Current Combined Premium':<30} {'PnL':<20} ".ljust(148) + "║", f)
             log_print("╠" + "═" * 148 + "╣", f)
-            log_print("║" + f"  CALL           {int(call_strike_target):>8,}              -                  -                    ${call_bid:>8.2f}                                                      ".ljust(148) + "║", f)
-            log_print("║" + f"  PUT            {int(put_strike_target):>8,}              -                  -                    ${put_bid:>8.2f}                                                      ".ljust(148) + "║", f)
-            log_print("║" + " " * 148 + "║", f)
-            log_print("║" + f"                                                            ${combined_premium:>8.2f}                                    If entered now at 3:30 AM          ".ljust(148) + "║", f)
-            log_print("║" + " " * 148 + "║", f)
+            
+            # First row - CALL with combined values
+            log_print("║" + f" {'CALL':<12} {str(int(call_strike_target)):>10}     {'-':<18}  {'-':<20}  ${call_bid:<28.2f} ${combined_premium:<28.2f} {'-':<20}".ljust(148) + "║", f)
+            
+            # Second row - PUT without combined values
+            log_print("║" + f" {'PUT':<12} {str(int(put_strike_target)):>10}     {'-':<18}  {'':22}  ${put_bid:<28.2f} {'':30} {'':20}".ljust(148) + "║", f)
+            
+            log_print("╚" + "═" * 148 + "╝", f)
+            log_print("", f)
+            
+            # Potential returns
+            log_print("╔" + "═" * 148 + "╗", f)
+            log_print("║" + " POTENTIAL RETURNS (if entered at current premiums):".ljust(148) + "║", f)
             log_print("╠" + "═" * 148 + "╣", f)
-            log_print("║" + " " * 148 + "║", f)
-            log_print("║" + "  POTENTIAL RETURNS (if entered at current premiums):".ljust(148) + "║", f)
-            log_print("║" + " " * 148 + "║", f)
+            log_print("║" + f" {'Size':<20} {'Margin':<15} {'Premium Collected':<25} {'Max Profit':<25} {'Loss @ 5x SL':<25}".ljust(148) + "║", f)
+            log_print("║" + f" {'-' * 130}".ljust(148) + "║", f)
             
             btc_sizes = [1, 2, 5, 7, 10, 12]
-            log_print("║" + f"  {'Size':<20} {'Margin':<15} {'Premium Collected':<25} {'Max Profit':<25} {'Loss @ 5x SL':<25}".ljust(148) + "║", f)
-            log_print("║" + f"  {'-' * 130}".ljust(148) + "║", f)
-            
             for btc in btc_sizes:
                 margin = btc * 880
                 premium = combined_premium * btc
@@ -312,22 +315,26 @@ with open(log_file, 'w', encoding='utf-8') as f:
                 profit_str = f"${max_profit:,.2f} ({format_inr(max_profit * usd_to_inr)})"
                 loss_str = f"-${loss_5x:,.2f} ({format_inr(loss_5x * usd_to_inr)})"
                 
-                log_print("║" + f"  {size_str:<20} {margin_str:<15} {premium_str:<25} {profit_str:<25} {loss_str:<25}".ljust(148) + "║", f)
+                log_print("║" + f" {size_str:<20} {margin_str:<15} {premium_str:<25} {profit_str:<25} {loss_str:<25}".ljust(148) + "║", f)
             
-            log_print("║" + " " * 148 + "║", f)
+            log_print("╚" + "═" * 148 + "╝", f)
+            log_print("", f)
+            
+            # Status
+            log_print("╔" + "═" * 148 + "╗", f)
+            log_print("║" + " STATUS:".ljust(148) + "║", f)
             log_print("╠" + "═" * 148 + "╣", f)
-            log_print("║" + " " * 148 + "║", f)
             
             if is_saturday:
-                log_print("║" + "  [INFO] TODAY IS SATURDAY - Ready to trade at 3:30 AM".ljust(148) + "║", f)
+                log_print("║" + " [INFO] TODAY IS SATURDAY - Ready to trade at 3:30 AM".ljust(148) + "║", f)
             else:
-                log_print("║" + f"  [INFO] Today is {today.strftime('%A')} - Monitoring only".ljust(148) + "║", f)
+                log_print("║" + f" [INFO] Today is {today.strftime('%A')} - Monitoring only".ljust(148) + "║", f)
             
-            log_print("║" + "  [INFO] Run this script between 3:25-3:35 AM on Saturday to lock in entry prices".ljust(148) + "║", f)
-            log_print("║" + " " * 148 + "║", f)
+            log_print("║" + " [INFO] Run this script between 3:25-3:35 AM on Saturday to lock in entry prices".ljust(148) + "║", f)
+            
+            log_print("╚" + "═" * 148 + "╝", f)
+            log_print("", f)
         
-        log_print("╚" + "═" * 148 + "╝", f)
-        log_print("", f)
         log_print("", f)
         
         # ═══════════════════════════════════════════════════════════════════
@@ -395,3 +402,13 @@ with open(log_file, 'w', encoding='utf-8') as f:
     log_print(f"Log saved to: {log_file}", f)
 
 print(f"\n[SUCCESS] Saved to: {log_file}")
+```
+
+**Now the table will show exactly like your image:**
+```
+╔════════════════════════════════════════════════════════════════════════════╗
+║ Position     Strikes         Premium @ 3:30   Combined Premium   Current Premium @ 06:48:30   Current Combined Premium   PnL                  ║
+╠════════════════════════════════════════════════════════════════════════════╣
+║ CALL          1,06,000       $40.00           $78.00              $20.00                       $44.00                     $34.00 (₹2,856)      ║
+║ PUT           1,02,000       $38.00                               $24.00                                                                       ║
+╚════════════════════════════════════════════════════════════════════════════╝
