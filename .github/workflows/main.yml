@@ -1,9 +1,20 @@
-name: Delta OTM Options Observer
+name: BTC Short Strangle - Daily Observer
+
 on:
-  workflow_dispatch:  # Triggered manually or via API
+  # Daily at 3:30 AM IST = previous day 22:00 UTC
+  schedule:
+    - cron: '0 22 * * *'
+  
+  # Manual trigger for testing
+  workflow_dispatch:
+
+permissions:
+  contents: write  # Needed to commit tracker back to repo
+
 jobs:
-  run-delta-script:
+  run-strategy:
     runs-on: ubuntu-latest
+    timeout-minutes: 960  # 16 hours (covers full monitoring till 5:15 PM IST)
     
     steps:
       - name: Checkout repository
@@ -15,30 +26,31 @@ jobs:
           python-version: '3.10'
       
       - name: Install dependencies
-        run: |
-          echo "Installing required Python libraries..."
-          pip install requests pytz
-          echo "Dependencies installed successfully!"
+        run: pip install requests pytz openpyxl
       
-      - name: Run Delta OTM Script
-        run: |
-          echo "=========================================="
-          echo "Starting Delta OTM Options Observer"
-          echo "Time: $(date)"
-          echo "=========================================="
-          python 15StrikesFarOTMPicker.py
-          echo "=========================================="
-          echo "Script completed at: $(date)"
-          echo "=========================================="
-
+      - name: Run Strategy
+        env:
+          DELTA_API_KEY: ${{ secrets.DELTA_API_KEY }}
+          DELTA_API_SECRET: ${{ secrets.DELTA_API_SECRET }}
+        run: python 15StrikesFarOTMPicker.py
+      
       - name: Display Log
         if: always()
-        run: cat option_chain_logs/*.txt
+        run: cat live_trading_logs/*.txt 2>/dev/null || echo "No logs"
       
-      - name: Upload logs
+      - name: Commit tracker to repo
+        if: always()
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+          git add trade_tracker.xlsx
+          git diff --cached --quiet || git commit -m "Update trade tracker - $(date -u +'%Y-%m-%d')"
+          git push
+      
+      - name: Upload trading logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: option-chain-logs-${{ github.run_number }}
-          path: option_chain_logs/
+          name: trading-logs-${{ github.run_number }}
+          path: live_trading_logs/
           retention-days: 90
