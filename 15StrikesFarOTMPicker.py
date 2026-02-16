@@ -34,7 +34,7 @@ BASE_URL = 'https://api.india.delta.exchange'
 IST = pytz.timezone('Asia/Kolkata')
 
 # Trading Parameters
-POSITION_SIZE_LOTS = 10
+POSITION_SIZE_LOTS = 1000
 POSITION_SIZE_BTC = POSITION_SIZE_LOTS / 1000
 
 # Stop Loss
