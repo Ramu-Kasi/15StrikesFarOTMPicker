@@ -44,9 +44,12 @@ jobs:
         run: |
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
-          git add -f active_trade.json trade_tracker.xlsx 2>/dev/null || true
-          git diff --cached --quiet || git commit -m "Trade update - $(date -u +'%Y-%m-%d %H:%M UTC')"
-          git push || true
+          echo "=== Files in workspace ==="
+          ls -la active_trade.json trade_tracker.xlsx 2>/dev/null || echo "No trade files found"
+          [ -f active_trade.json ] && git add -f active_trade.json && echo "Staged: active_trade.json"
+          [ -f trade_tracker.xlsx ] && git add -f trade_tracker.xlsx && echo "Staged: trade_tracker.xlsx"
+          git diff --cached --quiet && echo "Nothing to commit" || (git commit -m "Trade update - $(date -u +'%Y-%m-%d %H:%M UTC')" && git push)
+          echo "=== Done ==="
       
       - name: Upload trading logs
         if: always()
