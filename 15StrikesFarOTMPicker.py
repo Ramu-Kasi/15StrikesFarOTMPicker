@@ -435,20 +435,13 @@ def _close_both_legs(f, call_product_id, put_product_id, reason):
 # =====================================================================
 
 def detect_phase():
-    """Determine if this is ENTRY or EXIT phase based on current IST time"""
-    now = datetime.now(IST)
-    hour = now.hour
-
-    # If active_trade.json exists, we need to EXIT
+    """Determine if this is ENTRY or EXIT phase"""
+    # If active_trade.json exists in repo, we need to EXIT
     if os.path.exists(ACTIVE_TRADE_FILE):
         return "EXIT"
 
-    # Before noon = ENTRY phase (3:30 AM run)
-    # After noon = EXIT phase (5:15 PM run) but no active trade means nothing to exit
-    if hour < 12:
-        return "ENTRY"
-    else:
-        return "NO_TRADE"  # Exit phase but no active trade exists
+    # No active trade = always ENTRY (works for scheduled + manual triggers)
+    return "ENTRY"
 
 # =====================================================================
 # MAIN EXECUTION
