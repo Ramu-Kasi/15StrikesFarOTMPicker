@@ -49,7 +49,7 @@ EXIT_HOUR = 17
 EXIT_MINUTE = 15
 
 # Filters
-MAX_SPREAD_PCT = 5.0
+MAX_SPREAD_PCT = 30.0
 MIN_PREMIUM_USD = 5.0
 
 # Monitoring
