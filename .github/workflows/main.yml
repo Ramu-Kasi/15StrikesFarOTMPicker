@@ -43,9 +43,13 @@ jobs:
         run: |
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
-          git add trade_tracker.xlsx
-          git diff --cached --quiet || git commit -m "Update trade tracker - $(date -u +'%Y-%m-%d')"
-          git push
+          if [ -f trade_tracker.xlsx ]; then
+            git add trade_tracker.xlsx
+            git diff --cached --quiet || git commit -m "Update trade tracker - $(date -u +'%Y-%m-%d')"
+            git push
+          else
+            echo "No tracker file generated today (no valid strikes). Skipping commit."
+          fi
       
       - name: Upload trading logs
         if: always()
