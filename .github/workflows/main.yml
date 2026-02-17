@@ -1,20 +1,21 @@
 name: BTC Short Strangle - Daily Observer
 
 on:
-  # Daily at 3:30 AM IST = previous day 22:00 UTC
   schedule:
+    # Phase 1 ENTRY: 3:30 AM IST = 22:00 UTC previous day
     - cron: '0 22 * * *'
+    # Phase 2 EXIT: 5:15 PM IST = 11:45 UTC same day
+    - cron: '45 11 * * *'
   
-  # Manual trigger for testing
   workflow_dispatch:
 
 permissions:
-  contents: write  # Needed to commit tracker back to repo
+  contents: write
 
 jobs:
   run-strategy:
     runs-on: ubuntu-latest
-    timeout-minutes: 960  # 16 hours (covers full monitoring till 5:15 PM IST)
+    timeout-minutes: 10  # Each phase finishes in seconds
     
     steps:
       - name: Checkout repository
@@ -38,18 +39,14 @@ jobs:
         if: always()
         run: cat live_trading_logs/*.txt 2>/dev/null || echo "No logs"
       
-      - name: Commit tracker to repo
+      - name: Commit files to repo
         if: always()
         run: |
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
-          if [ -f trade_tracker.xlsx ]; then
-            git add trade_tracker.xlsx
-            git diff --cached --quiet || git commit -m "Update trade tracker - $(date -u +'%Y-%m-%d')"
-            git push
-          else
-            echo "No tracker file generated today (no valid strikes). Skipping commit."
-          fi
+          git add -f active_trade.json trade_tracker.xlsx 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "Trade update - $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push || true
       
       - name: Upload trading logs
         if: always()
