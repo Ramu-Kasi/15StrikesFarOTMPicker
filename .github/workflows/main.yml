@@ -32,7 +32,7 @@ jobs:
         env:
           DELTA_API_KEY: ${{ secrets.DELTA_API_KEY }}
           DELTA_API_SECRET: ${{ secrets.DELTA_API_SECRET }}
-        run: python 15StrikesFarOTMPicker.py
+        run: python -u 15StrikesFarOTMPicker.py
       
       - name: Display Log
         if: always()
