@@ -1,13 +1,30 @@
 name: BTC Short Strangle - Daily Observer
 
+# ─────────────────────────────────────────────────────────────────────
+# SCHEDULE
+#   ENTRY : 3:30 AM IST  =  22:00 UTC (previous calendar day)
+#   EXIT  : 5:15 PM IST  =  11:45 UTC (same calendar day as ENTRY)
+#
+# MANUAL TRIGGER
+#   Use workflow_dispatch and pick ENTRY or EXIT explicitly.
+#   Never leave it ambiguous.
+# ─────────────────────────────────────────────────────────────────────
+
 on:
   schedule:
-    # Phase 1 ENTRY: 3:30 AM IST = 22:00 UTC previous day
-    - cron: '0 22 * * *'
-    # Phase 2 EXIT: 5:15 PM IST = 11:45 UTC same day
-    - cron: '45 11 * * *'
-  
+    - cron: '0 22 * * *'    # ENTRY — 3:30 AM IST (22:00 UTC prev day)
+    - cron: '45 11 * * *'   # EXIT  — 5:15 PM IST (11:45 UTC)
+
   workflow_dispatch:
+    inputs:
+      phase:
+        description: 'Which phase to run?'
+        required: true
+        default: 'ENTRY'
+        type: choice
+        options:
+          - ENTRY
+          - EXIT
 
 permissions:
   contents: write
@@ -15,42 +32,89 @@ permissions:
 jobs:
   run-strategy:
     runs-on: ubuntu-latest
-    timeout-minutes: 10  # Each phase finishes in seconds
-    
+    timeout-minutes: 10
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-      
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-      
+
       - name: Install dependencies
         run: pip install requests pytz openpyxl
-      
+
+      # ── Determine phase ───────────────────────────────────────────────
+      # Manual dispatch: use whatever the user selected.
+      # Scheduled:       decide by UTC hour.
+      #   22:xx UTC  →  ENTRY   (3:30 AM IST)
+      #   11:xx UTC  →  EXIT    (5:15 PM IST)
+      - name: Determine Phase
+        id: set_phase
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "PHASE=${{ github.event.inputs.phase }}" >> $GITHUB_ENV
+            echo "phase=${{ github.event.inputs.phase }}" >> $GITHUB_OUTPUT
+          else
+            HOUR=$(date -u +%H)
+            if [ "$HOUR" -ge 20 ]; then
+              echo "PHASE=ENTRY" >> $GITHUB_ENV
+              echo "phase=ENTRY"  >> $GITHUB_OUTPUT
+            else
+              echo "PHASE=EXIT"   >> $GITHUB_ENV
+              echo "phase=EXIT"   >> $GITHUB_OUTPUT
+            fi
+          fi
+          echo "Running phase: $PHASE"
+
       - name: Run Strategy
         env:
-          DELTA_API_KEY: ${{ secrets.DELTA_API_KEY }}
+          DELTA_API_KEY:    ${{ secrets.DELTA_API_KEY }}
           DELTA_API_SECRET: ${{ secrets.DELTA_API_SECRET }}
+          PHASE:            ${{ env.PHASE }}
         run: python -u 15StrikesFarOTMPicker.py
-      
+
       - name: Display Log
         if: always()
-        run: cat live_trading_logs/*.txt 2>/dev/null || echo "No logs"
-      
-      - name: Commit files to repo
+        run: cat live_trading_logs/*.txt 2>/dev/null || echo "No logs found"
+
+      # ── Commit changed files back to the repo ─────────────────────────
+      # ENTRY commits active_trade.json so EXIT can read it next run.
+      # EXIT  commits trade_tracker.xlsx (and the now-deleted active_trade.json).
+      - name: Commit files
         if: always()
         run: |
-          git config user.name "GitHub Actions Bot"
+          git config user.name  "GitHub Actions Bot"
           git config user.email "actions@github.com"
-          echo "=== Files in workspace ==="
-          ls -la active_trade.json trade_tracker.xlsx 2>/dev/null || echo "No trade files found"
-          [ -f active_trade.json ] && git add -f active_trade.json && echo "Staged: active_trade.json"
-          [ -f trade_tracker.xlsx ] && git add -f trade_tracker.xlsx && echo "Staged: trade_tracker.xlsx"
-          git diff --cached --quiet && echo "Nothing to commit" || (git commit -m "Trade update - $(date -u +'%Y-%m-%d %H:%M UTC')" && git push)
+
+          echo "=== Workspace files ==="
+          ls -la active_trade.json trade_tracker.xlsx 2>/dev/null || true
+
+          # Stage active_trade.json if it exists (ENTRY creates it)
+          [ -f active_trade.json ] \
+            && git add -f active_trade.json \
+            && echo "Staged: active_trade.json"
+
+          # Stage trade_tracker.xlsx if it exists (EXIT updates it)
+          [ -f trade_tracker.xlsx ] \
+            && git add -f trade_tracker.xlsx \
+            && echo "Staged: trade_tracker.xlsx"
+
+          # Remove active_trade.json from git if EXIT deleted it
+          git ls-files --deleted | grep -q active_trade.json \
+            && git rm --cached active_trade.json \
+            && echo "Removed stale active_trade.json from git" \
+            || true
+
+          git diff --cached --quiet \
+            && echo "Nothing to commit" \
+            || git commit -m "[${{ steps.set_phase.outputs.phase }}] $(date -u +'%Y-%m-%d %H:%M UTC')" \
+            && git push
+
           echo "=== Done ==="
-      
+
       - name: Upload trading logs
         if: always()
         uses: actions/upload-artifact@v4
