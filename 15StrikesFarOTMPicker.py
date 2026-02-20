@@ -531,7 +531,8 @@ with open(log_file, 'w', encoding='utf-8') as f:
                     pa = float(pq.get('best_ask', 0) or 0)
 
                     if cb < MIN_PREMIUM_USD or pb < MIN_PREMIUM_USD:
-                        log_print(f"  CE +{ce_d} ${cs:,.0f} | PE -{pe_d} ${ps:,.0f}  "
+                        log_print(f"  CE +{ce_d} ${cs:,.0f} bid ${cb:.2f} | "
+                                  f"PE -{pe_d} ${ps:,.0f} bid ${pb:.2f}  "
                                   f"→ SKIP (below ${MIN_PREMIUM_USD} min)", f)
                         continue
 
