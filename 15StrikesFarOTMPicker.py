@@ -177,6 +177,100 @@ def get_current_premium(symbol):
     except Exception:
         return {'success': False}
 
+def get_intraday_worst_combined(call_symbol, put_symbol, entry_time_str, fh=None):
+    """
+    Fetch minute-level candles for both legs from entry time to 5:15 PM IST.
+    Zip by timestamp, sum call_ask + put_ask at each minute, return:
+      - worst_combined : highest combined premium seen at any single moment
+      - worst_time     : IST timestamp when that peak occurred
+      - candle_count   : how many matched candles were used
+    Returns None on failure.
+    """
+    try:
+        now_ist   = datetime.now(IST)
+        today_str = now_ist.strftime('%Y-%m-%d')
+
+        # Entry time → start of candle window
+        entry_parts = entry_time_str.split(':')
+        entry_dt = now_ist.replace(
+            hour=int(entry_parts[0]), minute=int(entry_parts[1]),
+            second=0, microsecond=0
+        )
+        exit_dt = now_ist.replace(hour=EXIT_HOUR, minute=EXIT_MINUTE, second=0, microsecond=0)
+
+        from_str = entry_dt.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+        to_str   = exit_dt.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+
+        def fetch_candles(symbol):
+            # First get product_id via ticker
+            r = requests.get(f"{BASE_URL}/v2/tickers/{symbol}", timeout=10)
+            if r.status_code != 200:
+                return None
+            product_id = r.json().get('result', {}).get('id')
+            if not product_id:
+                return None
+
+            r2 = requests.get(
+                f"{BASE_URL}/v2/history/candles",
+                params={
+                    'resolution': '1',          # 1-minute candles
+                    'symbol':     symbol,
+                    'start':      int(entry_dt.timestamp()),
+                    'end':        int(exit_dt.timestamp())
+                },
+                timeout=15
+            )
+            if r2.status_code != 200:
+                return None
+            candles = r2.json().get('result', [])
+            # Each candle: {time, open, high, low, close, volume}
+            # 'close' is the last traded price each minute — best proxy for ask
+            result = {}
+            for c in candles:
+                ts = c.get('time')
+                if ts:
+                    result[ts] = float(c.get('close', 0) or 0)
+            return result
+
+        log_print("  Fetching intraday minute candles for SL check...", fh)
+        call_candles = fetch_candles(call_symbol)
+        put_candles  = fetch_candles(put_symbol)
+
+        if not call_candles or not put_candles:
+            log_print("  [WARN] Could not fetch candles — skipping intraday SL check.", fh)
+            return None
+
+        # Find timestamps present in BOTH candle sets
+        common_ts = sorted(set(call_candles.keys()) & set(put_candles.keys()))
+        if not common_ts:
+            log_print("  [WARN] No overlapping candle timestamps — skipping intraday SL check.", fh)
+            return None
+
+        worst_combined = 0.0
+        worst_ts       = None
+        for ts in common_ts:
+            combined_at_ts = call_candles[ts] + put_candles[ts]
+            if combined_at_ts > worst_combined:
+                worst_combined = combined_at_ts
+                worst_ts       = ts
+
+        # Convert worst timestamp to IST string
+        worst_time_str = datetime.fromtimestamp(worst_ts, tz=IST).strftime('%H:%M') if worst_ts else '?'
+
+        log_print(f"  Intraday scan: {len(common_ts)} candles checked | "
+                  f"Peak combined: ${worst_combined:.2f} at {worst_time_str} IST", fh)
+
+        return {
+            'worst_combined': worst_combined,
+            'worst_time':     worst_time_str,
+            'candle_count':   len(common_ts)
+        }
+
+    except Exception as e:
+        log_print(f"  [WARN] Intraday SL check failed: {e}", fh)
+        return None
+
+
 def _close_both_legs(fh, call_pid, put_pid, reason):
     log_print(f"  Closing both legs — {reason}...", fh)
     if DRY_RUN:
@@ -752,49 +846,104 @@ with open(log_file, 'w', encoding='utf-8') as f:
             log_print(f"Entry PE    : {entry['put_symbol']}  bid ${entry['entry_pe']:.2f}", f)
             log_print(f"Entry combined: ${entry['entry_combined']:.2f}\n", f)
 
-            # ── Fetch exit prices ────────────────────────────────────────
-            log_print("Fetching exit prices...", f)
-            cd = get_current_premium(entry['call_symbol'])
-            pd = get_current_premium(entry['put_symbol'])
+            entry_combined = entry['entry_combined']
+            saved_usd_inr  = entry.get('usd_to_inr', usd_inr)
 
-            if not cd['success'] or not pd['success']:
-                log_print("  First attempt failed — retrying in 10 s...", f)
-                time.sleep(10)
+            sl_level        = entry_combined * SL_COMBINED_MULTIPLIER
+            hard_cap_usd    = HARD_MAX_LOSS_INR / saved_usd_inr / POSITION_SIZE_BTC + entry_combined
+
+            # ── Step 1: Intraday SL check via minute candles ─────────────
+            log_print("\nSTEP 1 — Intraday SL check (minute candles)...", f)
+            intraday = get_intraday_worst_combined(
+                call_symbol=entry['call_symbol'],
+                put_symbol=entry['put_symbol'],
+                entry_time_str=entry['entry_time'],
+                fh=f
+            )
+
+            sl_breached      = False
+            hard_cap_breached= False
+            early_exit_hit   = False
+            intraday_exit_ce = None
+            intraday_exit_pe = None
+
+            if intraday:
+                worst = intraday['worst_combined']
+                wt    = intraday['worst_time']
+
+                if worst >= sl_level:
+                    sl_breached   = True
+                    exit_combined = sl_level          # cap at exact SL level
+                    exit_time_str = wt
+                    exit_reason   = f"SL — Combined {SL_COMBINED_MULTIPLIER}x (intraday @ {wt})"
+                    # Split exit combined proportionally to entry ratio for CE/PE display
+                    ratio         = entry['entry_ce'] / entry_combined if entry_combined else 0.5
+                    intraday_exit_ce = round(exit_combined * ratio, 2)
+                    intraday_exit_pe = round(exit_combined * (1 - ratio), 2)
+                    log_print(f"  *** SL BREACHED intraday at {wt} — "
+                              f"peak ${worst:.2f} >= SL ${sl_level:.2f}", f)
+
+                elif worst >= hard_cap_usd:
+                    hard_cap_breached = True
+                    exit_combined = hard_cap_usd
+                    exit_time_str = wt
+                    exit_reason   = f"Hard Cap Rs.{HARD_MAX_LOSS_INR:,} (intraday @ {wt})"
+                    ratio         = entry['entry_ce'] / entry_combined if entry_combined else 0.5
+                    intraday_exit_ce = round(exit_combined * ratio, 2)
+                    intraday_exit_pe = round(exit_combined * (1 - ratio), 2)
+                    log_print(f"  *** HARD CAP BREACHED intraday at {wt} — "
+                              f"peak ${worst:.2f} >= cap ${hard_cap_usd:.2f}", f)
+                else:
+                    log_print(f"  No SL breach. Peak ${worst:.2f} < SL ${sl_level:.2f} — "
+                              f"proceeding to 5:15 PM price fetch.", f)
+
+            # ── Step 2: Fetch live 5:15 PM prices (if no intraday SL) ────
+            if not sl_breached and not hard_cap_breached:
+                log_print("\nSTEP 2 — Fetching live exit prices at 5:15 PM...", f)
                 cd = get_current_premium(entry['call_symbol'])
                 pd = get_current_premium(entry['put_symbol'])
 
-            exit_ce       = cd['ask'] if cd['success'] else 0.0
-            exit_pe       = pd['ask'] if pd['success'] else 0.0
-            exit_combined = exit_ce + exit_pe
+                if not cd['success'] or not pd['success']:
+                    log_print("  First attempt failed — retrying in 10 s...", f)
+                    time.sleep(10)
+                    cd = get_current_premium(entry['call_symbol'])
+                    pd = get_current_premium(entry['put_symbol'])
 
-            entry_combined = entry['entry_combined']
-            saved_usd_inr  = entry.get('usd_to_inr', usd_inr)
-            pnl_usd  = (entry_combined - exit_combined) * POSITION_SIZE_BTC
-            pnl_inr  = pnl_usd * saved_usd_inr
+                exit_ce       = cd['ask'] if cd['success'] else 0.0
+                exit_pe       = pd['ask'] if pd['success'] else 0.0
+                exit_combined = exit_ce + exit_pe
+                exit_time_str = now_ist.strftime('%H:%M')
 
-            # ── Determine what exit reason applies ───────────────────────
-            if exit_combined >= entry_combined * SL_COMBINED_MULTIPLIER:
-                exit_reason = f"SL — Combined {SL_COMBINED_MULTIPLIER}x"
-            elif (exit_combined - entry_combined) * POSITION_SIZE_BTC * saved_usd_inr >= HARD_MAX_LOSS_INR:
-                exit_reason = f"Hard Cap Rs.{HARD_MAX_LOSS_INR:,}"
-            elif exit_combined < EARLY_EXIT_PREMIUM:
-                exit_reason = "Early Exit — Premium decayed"
+                if exit_combined < EARLY_EXIT_PREMIUM:
+                    early_exit_hit = True
+                    exit_reason    = "Early Exit — Premium decayed"
+                else:
+                    exit_reason    = "Time Exit (5:15 PM)"
             else:
-                exit_reason = "Time Exit (5:15 PM)"
+                # Use proportional split for CE/PE display on intraday exits
+                exit_ce = intraday_exit_ce
+                exit_pe = intraday_exit_pe
 
-            exit_time_str = now_ist.strftime('%H:%M')
+            pnl_usd = (entry_combined - exit_combined) * POSITION_SIZE_BTC
+            pnl_inr = pnl_usd * saved_usd_inr
             dur_str = calc_duration(entry['entry_time'], exit_time_str,
                                     entry['date'], today_str)
 
             log_print(SEP, f)
             log_print("EXIT SUMMARY", f)
             log_print(SEP, f)
-            log_print(f"  Exit CE      : ${exit_ce:.2f}", f)
-            log_print(f"  Exit PE      : ${exit_pe:.2f}", f)
-            log_print(f"  Exit combined: ${exit_combined:.2f}", f)
-            log_print(f"  P&L          : ${pnl_usd:+.4f}  ({fmt_inr(pnl_inr)})", f)
-            log_print(f"  Exit reason  : {exit_reason}", f)
-            log_print(f"  Duration     : {dur_str}", f)
+            if intraday:
+                log_print(f"  Intraday peak  : ${intraday['worst_combined']:.2f} "
+                          f"at {intraday['worst_time']} IST "
+                          f"({intraday['candle_count']} candles checked)", f)
+                log_print(f"  SL level       : ${sl_level:.2f}  |  "
+                          f"Hard cap level : ${hard_cap_usd:.2f}", f)
+            log_print(f"  Exit CE        : ${exit_ce:.2f}", f)
+            log_print(f"  Exit PE        : ${exit_pe:.2f}", f)
+            log_print(f"  Exit combined  : ${exit_combined:.2f}", f)
+            log_print(f"  P&L            : ${pnl_usd:+.4f}  ({fmt_inr(pnl_inr)})", f)
+            log_print(f"  Exit reason    : {exit_reason}", f)
+            log_print(f"  Duration       : {dur_str}", f)
             log_print(SEP + "\n", f)
 
             # ── Write tracker ────────────────────────────────────────────
