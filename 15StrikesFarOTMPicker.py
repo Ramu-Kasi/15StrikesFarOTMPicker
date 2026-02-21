@@ -604,61 +604,82 @@ with open(log_file, 'w', encoding='utf-8') as f:
             selected_ce    = None
             selected_pe    = None
 
-            log_print("DELTA-NEUTRALITY SCAN (13–15 strikes OTM each side):", f)
-            log_print("-" * 120, f)
+            def run_strike_scan(range_start, range_end, label, fh):
+                """Scan strikes from range_start to range_end OTM.
+                Returns best_combo or None."""
+                nonlocal best_imbalance
+                best = None
+                bi   = float('inf')
 
-            max_ce_range = min(16, max_ce + 1)
-            max_pe_range = min(16, max_pe + 1)
+                log_print(f"DELTA-NEUTRALITY SCAN ({label}):", fh)
+                log_print("-" * 120, fh)
 
-            for ce_d in range(13, max_ce_range):
-                for pe_d in range(13, max_pe_range):
-                    cs = all_strikes[atm_index + ce_d]
-                    ps = all_strikes[atm_index - pe_d]
-                    co = calls_by_str.get(cs, {})
-                    po = puts_by_str.get(ps, {})
-                    cq = co.get('quotes', {})
-                    pq = po.get('quotes', {})
+                for ce_d in range(range_start, min(range_end + 1, max_ce + 1)):
+                    for pe_d in range(range_start, min(range_end + 1, max_pe + 1)):
+                        cs = all_strikes[atm_index + ce_d]
+                        ps = all_strikes[atm_index - pe_d]
+                        co = calls_by_str.get(cs, {})
+                        po = puts_by_str.get(ps, {})
+                        cq = co.get('quotes', {})
+                        pq = po.get('quotes', {})
 
-                    cb = float(cq.get('best_bid', 0) or 0)
-                    ca = float(cq.get('best_ask', 0) or 0)
-                    pb = float(pq.get('best_bid', 0) or 0)
-                    pa = float(pq.get('best_ask', 0) or 0)
+                        cb = float(cq.get('best_bid', 0) or 0)
+                        ca = float(cq.get('best_ask', 0) or 0)
+                        pb = float(pq.get('best_bid', 0) or 0)
+                        pa = float(pq.get('best_ask', 0) or 0)
 
-                    if cb < MIN_PREMIUM_USD or pb < MIN_PREMIUM_USD:
+                        if cb < MIN_PREMIUM_USD or pb < MIN_PREMIUM_USD:
+                            log_print(f"  CE +{ce_d} ${cs:,.0f} bid ${cb:.2f} | "
+                                      f"PE -{pe_d} ${ps:,.0f} bid ${pb:.2f}  "
+                                      f"→ SKIP (below ${MIN_PREMIUM_USD} min)", fh)
+                            continue
+
+                        cs_pct = ((ca - cb) / ca * 100) if ca > 0 else 100
+                        ps_pct = ((pa - pb) / pa * 100) if pa > 0 else 100
+                        wide   = cs_pct > MAX_SPREAD_PCT or ps_pct > MAX_SPREAD_PCT
+
+                        imb     = abs(cb - pb)
+                        imb_pct = imb / max(cb, pb) * 100
+
+                        flag = "  [WIDE SPREAD — skipped]" if wide else ""
                         log_print(f"  CE +{ce_d} ${cs:,.0f} bid ${cb:.2f} | "
                                   f"PE -{pe_d} ${ps:,.0f} bid ${pb:.2f}  "
-                                  f"→ SKIP (below ${MIN_PREMIUM_USD} min)", f)
-                        continue
+                                  f"→ Imbalance ${imb:.2f} ({imb_pct:.1f}%){flag}", fh)
 
-                    cs_pct = ((ca - cb) / ca * 100) if ca > 0 else 100
-                    ps_pct = ((pa - pb) / pa * 100) if pa > 0 else 100
-                    wide   = cs_pct > MAX_SPREAD_PCT or ps_pct > MAX_SPREAD_PCT
+                        if not wide and imb < bi:
+                            bi  = imb
+                            best = {
+                                'call_strike':    cs,   'put_strike':    ps,
+                                'ce_dist':        ce_d, 'pe_dist':       pe_d,
+                                'call_symbol':    co.get('symbol'),
+                                'put_symbol':     po.get('symbol'),
+                                'call_product_id':co.get('id'),
+                                'put_product_id': po.get('id'),
+                                'call_bid': cb,   'call_ask': ca,
+                                'put_bid':  pb,   'put_ask':  pa,
+                                'combined_premium': cb + pb,
+                                'scan_label': label
+                            }
+                            log_print(f"    *** BEST SO FAR: CE +{ce_d}, PE -{pe_d} "
+                                      f"imbalance ${imb:.2f} ({imb_pct:.1f}%)", fh)
 
-                    imb     = abs(cb - pb)
-                    imb_pct = imb / max(cb, pb) * 100
+                log_print("-" * 120 + "\n", fh)
+                return best
 
-                    flag = "  [WIDE SPREAD — skipped]" if wide else ""
-                    log_print(f"  CE +{ce_d} ${cs:,.0f} bid ${cb:.2f} | "
-                              f"PE -{pe_d} ${ps:,.0f} bid ${pb:.2f}  "
-                              f"→ Imbalance ${imb:.2f} ({imb_pct:.1f}%){flag}", f)
+            # ── PRIMARY: 13-15 strikes ───────────────────────────────────
+            best_combo = run_strike_scan(13, 15, "PRIMARY — 13-15 strikes OTM", f)
 
-                    if not wide and imb < best_imbalance:
-                        best_imbalance = imb
-                        best_combo = {
-                            'call_strike':    cs,   'put_strike':    ps,
-                            'ce_dist':        ce_d, 'pe_dist':       pe_d,
-                            'call_symbol':    co.get('symbol'),
-                            'put_symbol':     po.get('symbol'),
-                            'call_product_id':co.get('id'),
-                            'put_product_id': po.get('id'),
-                            'call_bid': cb,   'call_ask': ca,
-                            'put_bid':  pb,   'put_ask':  pa,
-                            'combined_premium': cb + pb
-                        }
-                        log_print(f"    *** BEST SO FAR: CE +{ce_d}, PE -{pe_d} "
-                                  f"imbalance ${imb:.2f} ({imb_pct:.1f}%)", f)
-
-            log_print("-" * 120 + "\n", f)
+            # ── FALLBACK: 10-12 strikes (only if primary found nothing) ──
+            if not best_combo:
+                log_print("[INFO] Primary scan (13-15) found no valid pair — "
+                          "trying fallback (10-12 strikes)...\n", f)
+                best_combo = run_strike_scan(10, 12, "FALLBACK — 10-12 strikes OTM", f)
+                if best_combo:
+                    log_print(f"[FALLBACK] Valid pair found at closer strikes — "
+                              f"note this trade has less buffer than usual.\n", f)
+                else:
+                    log_print("[INFO] Fallback scan (10-12) also found no valid pair. "
+                              "Skipping today.\n", f)
 
             if not best_combo:
                 log_print("[SKIP] No valid strike pair found today.", f)
@@ -669,7 +690,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
             combined    = best_combo['combined_premium']
 
             log_print(SEP, f)
-            log_print("SELECTED TRADE", f)
+            log_print(f"SELECTED TRADE  [{best_combo['scan_label']}]", f)
             log_print(SEP, f)
             log_print(f"  SELL CE : {best_combo['call_symbol']}  "
                       f"Strike ${selected_ce:,.0f}  (+{best_combo['ce_dist']} from ATM)  "
