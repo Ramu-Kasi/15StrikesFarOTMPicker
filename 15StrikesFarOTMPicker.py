@@ -607,7 +607,6 @@ with open(log_file, 'w', encoding='utf-8') as f:
             def run_strike_scan(range_start, range_end, label, fh):
                 """Scan strikes from range_start to range_end OTM.
                 Returns best_combo or None."""
-                nonlocal best_imbalance
                 best = None
                 bi   = float('inf')
 
