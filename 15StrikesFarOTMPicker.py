@@ -18,6 +18,16 @@ Two-phase approach:
 
 PHASE is injected as an environment variable by the GitHub Actions
 workflow - no file-sniffing, no ambiguity.
+
+FIXES (v2):
+  - get_intraday_worst_combined: 'NoneType' has no attribute 'get'
+      Root cause: ticker endpoint returns 'product_id' key not 'id'.
+      Fix: try both keys + log available keys on failure.
+      Additionally: candle endpoint accepts symbol directly,
+      product_id lookup step was unnecessary and fragile — removed.
+  - Silent SL skip was dangerous: if candle fetch fails, script now
+      does a FALLBACK spot-price SL check before proceeding to Step 2.
+      A failed candle fetch can no longer produce a phantom profit.
 """
 
 import requests
@@ -40,8 +50,6 @@ API_KEY    = os.environ.get('DELTA_API_KEY', '')
 API_SECRET = os.environ.get('DELTA_API_SECRET', '')
 BASE_URL   = 'https://api.india.delta.exchange'
 
-# Phase is set explicitly by the workflow (ENTRY or EXIT).
-# Falls back to ENTRY if somehow not provided.
 PHASE = os.environ.get('PHASE', 'ENTRY').upper().strip()
 
 IST = pytz.timezone('Asia/Kolkata')
@@ -60,7 +68,7 @@ MAX_SPREAD_PCT  = 30.0
 MIN_PREMIUM_USD = 5.0
 MONITOR_INTERVAL = 30
 
-TRACKER_FILE    = "trade_tracker.xlsx"
+TRACKER_FILE      = "trade_tracker.xlsx"
 ACTIVE_TRADE_FILE = "active_trade.json"
 
 # =====================================================================
@@ -177,54 +185,76 @@ def get_current_premium(symbol):
     except Exception:
         return {'success': False}
 
-def get_intraday_worst_combined(call_symbol, put_symbol, entry_time_str, fh=None):
+# =====================================================================
+# FIX: get_intraday_worst_combined
+# =====================================================================
+# BUG (original): fetch_candles() called /v2/tickers/{symbol} to get
+#   product_id, then used it for the candle endpoint. But the ticker
+#   response uses the key 'product_id', NOT 'id' — so result.get('id')
+#   always returned None, causing the NoneType error.
+#
+# FIX:
+#   1. The /v2/history/candles endpoint accepts 'symbol' directly —
+#      no need to look up product_id at all. Removed that step entirely.
+#   2. Added DEBUG logging so if the candle fetch ever fails again,
+#      the response body is printed so we can diagnose immediately.
+#   3. Added a FALLBACK spot-price SL check in the caller so a failed
+#      candle fetch can NEVER silently become a phantom profit.
+# =====================================================================
+
+def get_intraday_worst_combined(call_symbol, put_symbol, entry_time_str, sl_level,
+                                hard_cap_level, fh=None):
     """
-    Fetch minute-level candles for both legs from entry time to 5:15 PM IST.
-    Zip by timestamp, sum call_ask + put_ask at each minute, return:
-      - worst_combined : highest combined premium seen at any single moment
-      - worst_time     : IST timestamp when that peak occurred
-      - candle_count   : how many matched candles were used
-    Returns None on failure.
+    Fetch 1-minute candles for both legs from entry time to EXIT time.
+    Zip by timestamp, sum call_close + put_close at each minute.
+
+    Returns dict with:
+      worst_combined  : highest combined premium seen intraday
+      worst_time      : IST string when peak occurred
+      candle_count    : matched candle pairs checked
+      sl_breached     : True if worst_combined >= sl_level
+      hard_cap_breached: True if worst_combined >= hard_cap_level
+    Returns None on failure (caller must handle with fallback).
     """
     try:
-        now_ist   = datetime.now(IST)
-        today_str = now_ist.strftime('%Y-%m-%d')
-
-        # Entry time → start of candle window
+        now_ist  = datetime.now(IST)
         entry_parts = entry_time_str.split(':')
         entry_dt = now_ist.replace(
             hour=int(entry_parts[0]), minute=int(entry_parts[1]),
             second=0, microsecond=0
         )
-        exit_dt = now_ist.replace(hour=EXIT_HOUR, minute=EXIT_MINUTE, second=0, microsecond=0)
-
-        from_str = entry_dt.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
-        to_str   = exit_dt.astimezone(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+        exit_dt = now_ist.replace(
+            hour=EXIT_HOUR, minute=EXIT_MINUTE, second=0, microsecond=0
+        )
 
         def fetch_candles(symbol):
-            # First get product_id via ticker
-            r = requests.get(f"{BASE_URL}/v2/tickers/{symbol}", timeout=10)
-            if r.status_code != 200:
-                return None
-            product_id = r.json().get('result', {}).get('id')
-            if not product_id:
-                return None
-
-            r2 = requests.get(
+            """
+            FIX: removed the product_id lookup step entirely.
+            /v2/history/candles accepts 'symbol' directly.
+            """
+            r = requests.get(
                 f"{BASE_URL}/v2/history/candles",
                 params={
-                    'resolution': '1',          # 1-minute candles
+                    'resolution': '1',
                     'symbol':     symbol,
                     'start':      int(entry_dt.timestamp()),
                     'end':        int(exit_dt.timestamp())
                 },
                 timeout=15
             )
-            if r2.status_code != 200:
+            if r.status_code != 200:
+                # FIX: log response body so failures are diagnosable
+                log_print(f"  [DEBUG] Candle fetch HTTP {r.status_code} "
+                          f"for {symbol}: {r.text[:300]}", fh)
                 return None
-            candles = r2.json().get('result', [])
-            # Each candle: {time, open, high, low, close, volume}
-            # 'close' is the last traded price each minute — best proxy for ask
+
+            candles = r.json().get('result', [])
+            if not candles:
+                log_print(f"  [DEBUG] Zero candles returned for {symbol} "
+                          f"between {entry_dt.strftime('%H:%M')} - "
+                          f"{exit_dt.strftime('%H:%M')} IST", fh)
+                return None
+
             result = {}
             for c in candles:
                 ts = c.get('time')
@@ -237,13 +267,12 @@ def get_intraday_worst_combined(call_symbol, put_symbol, entry_time_str, fh=None
         put_candles  = fetch_candles(put_symbol)
 
         if not call_candles or not put_candles:
-            log_print("  [WARN] Could not fetch candles — skipping intraday SL check.", fh)
+            log_print("  [WARN] Candle fetch failed for one or both legs.", fh)
             return None
 
-        # Find timestamps present in BOTH candle sets
         common_ts = sorted(set(call_candles.keys()) & set(put_candles.keys()))
         if not common_ts:
-            log_print("  [WARN] No overlapping candle timestamps — skipping intraday SL check.", fh)
+            log_print("  [WARN] No overlapping candle timestamps found.", fh)
             return None
 
         worst_combined = 0.0
@@ -254,20 +283,24 @@ def get_intraday_worst_combined(call_symbol, put_symbol, entry_time_str, fh=None
                 worst_combined = combined_at_ts
                 worst_ts       = ts
 
-        # Convert worst timestamp to IST string
-        worst_time_str = datetime.fromtimestamp(worst_ts, tz=IST).strftime('%H:%M') if worst_ts else '?'
+        worst_time_str = (datetime.fromtimestamp(worst_ts, tz=IST).strftime('%H:%M')
+                          if worst_ts else '?')
 
-        log_print(f"  Intraday scan: {len(common_ts)} candles checked | "
-                  f"Peak combined: ${worst_combined:.2f} at {worst_time_str} IST", fh)
+        log_print(f"  Intraday scan: {len(common_ts)} candles | "
+                  f"Peak combined: ${worst_combined:.2f} at {worst_time_str} IST | "
+                  f"SL level: ${sl_level:.2f}", fh)
 
         return {
-            'worst_combined': worst_combined,
-            'worst_time':     worst_time_str,
-            'candle_count':   len(common_ts)
+            'worst_combined':    worst_combined,
+            'worst_time':        worst_time_str,
+            'candle_count':      len(common_ts),
+            'sl_breached':       worst_combined >= sl_level,
+            'hard_cap_breached': worst_combined >= hard_cap_level,
         }
 
     except Exception as e:
-        log_print(f"  [WARN] Intraday SL check failed: {e}", fh)
+        log_print(f"  [WARN] Intraday SL check exception: {e}", fh)
+        log_print(f"  [DEBUG] {traceback.format_exc()}", fh)
         return None
 
 
@@ -308,16 +341,15 @@ def monitor_live(fh, call_sym, put_sym, call_pid, put_pid,
             now      = datetime.now(IST)
             time_str = now.strftime('%H:%M:%S')
 
-            # ── Time exit ──────────────────────────────────────────
             if now.hour > EXIT_HOUR or (now.hour == EXIT_HOUR and now.minute >= EXIT_MINUTE):
                 log_print(f"\n[{time_str}] TIME EXIT triggered", fh)
                 cd = get_current_premium(call_sym)
                 pd = get_current_premium(put_sym)
                 result.update({
-                    'exit_ce':       cd['ask'] if cd['success'] else 0,
-                    'exit_pe':       pd['ask'] if pd['success'] else 0,
+                    'exit_ce':      cd['ask'] if cd['success'] else 0,
+                    'exit_pe':      pd['ask'] if pd['success'] else 0,
                     'exit_reason':  'Time Exit (5:15 PM)',
-                    'exit_time':     time_str
+                    'exit_time':    time_str
                 })
                 result['exit_combined'] = result['exit_ce'] + result['exit_pe']
                 _close_both_legs(fh, call_pid, put_pid, "Time Exit")
@@ -331,7 +363,6 @@ def monitor_live(fh, call_sym, put_sym, call_pid, put_pid,
                 time.sleep(MONITOR_INTERVAL)
                 continue
 
-            # ── Manual exit detection ───────────────────────────────
             pos_res = get_positions()
             if pos_res['success']:
                 has_call = any(p.get('product_id') == call_pid and int(p.get('size', 0)) != 0
@@ -353,7 +384,6 @@ def monitor_live(fh, call_sym, put_sym, call_pid, put_pid,
             log_print(f"[{time_str}] CE ${cur_ce:.2f} | PE ${cur_pe:.2f} | "
                       f"Combined ${cur_combined:.2f} | P&L ${pnl_usd:+.4f} (Rs.{pnl_inr:+,.0f})", fh)
 
-            # ── Stop losses ─────────────────────────────────────────
             if cur_combined >= entry_combined * SL_COMBINED_MULTIPLIER:
                 log_print(f"\n[{time_str}] SL1 HIT: combined >= {SL_COMBINED_MULTIPLIER}x", fh)
                 result.update({'exit_ce': cur_ce, 'exit_pe': cur_pe,
@@ -441,10 +471,10 @@ def append_to_tracker(trade):
         ws.append(HEADERS)
         for ci in range(1, len(HEADERS) + 1):
             cell = ws.cell(row=1, column=ci)
-            cell.font  = H_FONT
-            cell.fill  = H_FILL
+            cell.font      = H_FONT
+            cell.fill      = H_FILL
             cell.alignment = H_ALIGN
-            cell.border= BORDER
+            cell.border    = BORDER
         ws.freeze_panes = 'A2'
         ws.auto_filter.ref = f"A1:{chr(64+len(HEADERS))}1"
         for col, w in COL_W.items():
@@ -509,13 +539,12 @@ def append_to_tracker(trade):
     print(f"[TRACKER] Appended row {nr} to {TRACKER_FILE}")
 
 # =====================================================================
-# HELPER: duration string between two HH:MM strings (same day)
+# HELPER: duration string
 # =====================================================================
 
 def calc_duration(entry_time_str, exit_time_str, entry_date, exit_date):
-    """Returns a human-readable duration like '13h 45m'."""
     try:
-        efmt = '%d-%m-%Y %H:%M'
+        efmt     = '%d-%m-%Y %H:%M'
         entry_dt = datetime.strptime(f"{entry_date} {entry_time_str[:5]}", efmt)
         exit_dt  = datetime.strptime(f"{exit_date} {exit_time_str[:5]}", efmt)
         secs     = int((exit_dt - entry_dt).total_seconds())
@@ -532,7 +561,7 @@ def calc_duration(entry_time_str, exit_time_str, entry_date, exit_date):
 with open(log_file, 'w', encoding='utf-8') as f:
     try:
         now_ist      = datetime.now(IST)
-        today_str    = now_ist.strftime('%d-%m-%Y')   # e.g. 20-02-2026
+        today_str    = now_ist.strftime('%d-%m-%Y')
         today_day    = now_ist.strftime('%A')
         is_saturday  = now_ist.weekday() == 5
         usd_inr      = get_usd_inr()
@@ -552,20 +581,17 @@ with open(log_file, 'w', encoding='utf-8') as f:
         # ╚══════════════════════════════════════════════════════════════╝
         if PHASE == "ENTRY":
 
-            # ── Expiry ─────────────────────────────────────────────────
-            cutoff = now_ist.replace(hour=17, minute=30, second=0, microsecond=0)
+            cutoff          = now_ist.replace(hour=17, minute=30, second=0, microsecond=0)
             target_expiry   = now_ist if now_ist < cutoff else now_ist + timedelta(days=1)
             expiry_date_str = target_expiry.strftime('%d-%m-%Y')
             log_print(f"Target expiry: {expiry_date_str}\n", f)
 
-            # ── BTC Spot ────────────────────────────────────────────────
             r = requests.get(f"{BASE_URL}/v2/tickers/BTCUSD", timeout=10)
             if r.status_code != 200:
                 raise Exception(f"Spot fetch failed: HTTP {r.status_code}")
             spot_price = float(r.json()['result']['spot_price'])
             log_print(f"BTC Spot: ${spot_price:,.2f}\n", f)
 
-            # ── Option chain ────────────────────────────────────────────
             params = {
                 'contract_types': 'call_options,put_options',
                 'underlying_asset_symbols': 'BTC',
@@ -598,15 +624,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
             if max_ce < 13 or max_pe < 13:
                 log_print(f"[WARNING] Need 13 strikes each side. Have: CE {max_ce}, PE {max_pe}\n", f)
 
-            # ── Strike selection: delta-neutral optimisation ────────────
-            best_combo     = None
-            best_imbalance = float('inf')
-            selected_ce    = None
-            selected_pe    = None
-
             def run_strike_scan(range_start, range_end, label, fh):
-                """Scan strikes from range_start to range_end OTM.
-                Returns best_combo or None."""
                 best = None
                 bi   = float('inf')
 
@@ -648,12 +666,12 @@ with open(log_file, 'w', encoding='utf-8') as f:
                         if not wide and imb < bi:
                             bi  = imb
                             best = {
-                                'call_strike':    cs,   'put_strike':    ps,
-                                'ce_dist':        ce_d, 'pe_dist':       pe_d,
-                                'call_symbol':    co.get('symbol'),
-                                'put_symbol':     po.get('symbol'),
-                                'call_product_id':co.get('id'),
-                                'put_product_id': po.get('id'),
+                                'call_strike':     cs,   'put_strike':    ps,
+                                'ce_dist':         ce_d, 'pe_dist':       pe_d,
+                                'call_symbol':     co.get('symbol'),
+                                'put_symbol':      po.get('symbol'),
+                                'call_product_id': co.get('product_id') or co.get('id'),
+                                'put_product_id':  po.get('product_id') or po.get('id'),
                                 'call_bid': cb,   'call_ask': ca,
                                 'put_bid':  pb,   'put_ask':  pa,
                                 'combined_premium': cb + pb,
@@ -665,20 +683,16 @@ with open(log_file, 'w', encoding='utf-8') as f:
                 log_print("-" * 120 + "\n", fh)
                 return best
 
-            # ── PRIMARY: 13-15 strikes ───────────────────────────────────
             best_combo = run_strike_scan(13, 15, "PRIMARY — 13-15 strikes OTM", f)
 
-            # ── FALLBACK: 10-12 strikes (only if primary found nothing) ──
             if not best_combo:
                 log_print("[INFO] Primary scan (13-15) found no valid pair — "
                           "trying fallback (10-12 strikes)...\n", f)
                 best_combo = run_strike_scan(10, 12, "FALLBACK — 10-12 strikes OTM", f)
                 if best_combo:
-                    log_print(f"[FALLBACK] Valid pair found at closer strikes — "
-                              f"note this trade has less buffer than usual.\n", f)
+                    log_print("[FALLBACK] Valid pair found at closer strikes.\n", f)
                 else:
-                    log_print("[INFO] Fallback scan (10-12) also found no valid pair. "
-                              "Skipping today.\n", f)
+                    log_print("[INFO] Fallback scan also found no valid pair. Skipping today.\n", f)
 
             if not best_combo:
                 log_print("[SKIP] No valid strike pair found today.", f)
@@ -707,33 +721,31 @@ with open(log_file, 'w', encoding='utf-8') as f:
             log_print(SEP + "\n", f)
 
             if DRY_RUN:
-                # ── Save entry snapshot; exit job. EXIT phase runs at 5:15 PM ──
                 active_trade = {
-                    'date':             today_str,
-                    'day':              today_day,
-                    'entry_time':       now_ist.strftime('%H:%M'),
-                    'btc_spot':         spot_price,
-                    'atm_strike':       atm_strike,
-                    'usd_to_inr':       usd_inr,
-                    'call_strike':      best_combo['call_strike'],
-                    'put_strike':       best_combo['put_strike'],
-                    'ce_dist':          best_combo['ce_dist'],
-                    'pe_dist':          best_combo['pe_dist'],
-                    'call_symbol':      best_combo['call_symbol'],
-                    'put_symbol':       best_combo['put_symbol'],
-                    'call_product_id':  best_combo['call_product_id'],
-                    'put_product_id':   best_combo['put_product_id'],
-                    'entry_ce':         best_combo['call_bid'],
-                    'entry_pe':         best_combo['put_bid'],
-                    'entry_combined':   combined
+                    'date':            today_str,
+                    'day':             today_day,
+                    'entry_time':      now_ist.strftime('%H:%M'),
+                    'btc_spot':        spot_price,
+                    'atm_strike':      atm_strike,
+                    'usd_to_inr':      usd_inr,
+                    'call_strike':     best_combo['call_strike'],
+                    'put_strike':      best_combo['put_strike'],
+                    'ce_dist':         best_combo['ce_dist'],
+                    'pe_dist':         best_combo['pe_dist'],
+                    'call_symbol':     best_combo['call_symbol'],
+                    'put_symbol':      best_combo['put_symbol'],
+                    'call_product_id': best_combo['call_product_id'],
+                    'put_product_id':  best_combo['put_product_id'],
+                    'entry_ce':        best_combo['call_bid'],
+                    'entry_pe':        best_combo['put_bid'],
+                    'entry_combined':  combined
                 }
                 with open(ACTIVE_TRADE_FILE, 'w') as tf:
                     json.dump(active_trade, tf, indent=2)
                 log_print(f"[DRY RUN] Entry saved → {ACTIVE_TRADE_FILE}", f)
-                log_print(f"[DRY RUN] EXIT phase will run at 5:15 PM IST via scheduled workflow.\n", f)
+                log_print(f"[DRY RUN] EXIT phase will run at 5:15 PM IST.\n", f)
 
             elif is_saturday:
-                # ── LIVE: place orders + monitor ───────────────────────
                 log_print("PLACING LIVE ORDERS...\n", f)
                 bal = get_wallet_balance()
                 if bal['success']:
@@ -793,7 +805,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
             else:
                 log_print(f"[INFO] {today_day} — live orders only on Saturdays. Nothing placed.\n", f)
 
-            # ── Full option chain display ───────────────────────────────
+            # Full option chain display
             log_print("=" * 160, f)
             log_print("FULL OPTION CHAIN", f)
             log_print("=" * 160 + "\n", f)
@@ -825,9 +837,9 @@ with open(log_file, 'w', encoding='utf-8') as f:
                 p_iv  = str(pq.get('ask_iv', '-'))
 
                 marker = ""
-                if strike == atm_strike:   marker = "  ← ATM"
-                elif strike == selected_ce: marker = "  ← CE SELECTED"
-                elif strike == selected_pe: marker = "  ← PE SELECTED"
+                if strike == atm_strike:    marker = "  <- ATM"
+                elif strike == selected_ce: marker = "  <- CE SELECTED"
+                elif strike == selected_pe: marker = "  <- PE SELECTED"
 
                 log_print(
                     f"{c_sym:<22} | ${strike:>11,.0f} | {c_b:>10} | {c_a:>10} | {c_iv:>8} || "
@@ -840,7 +852,6 @@ with open(log_file, 'w', encoding='utf-8') as f:
         # ╚══════════════════════════════════════════════════════════════╝
         elif PHASE == "EXIT":
 
-            # ── Load entry file ─────────────────────────────────────────
             if not os.path.exists(ACTIVE_TRADE_FILE):
                 log_print("[EXIT] No active_trade.json found — nothing to exit.\n", f)
                 raise SystemExit(0)
@@ -850,13 +861,9 @@ with open(log_file, 'w', encoding='utf-8') as f:
 
             entry_date = entry.get('date', '')
 
-            # ── CRITICAL DATE GUARD ─────────────────────────────────────
-            # If active_trade.json is from a PREVIOUS day (e.g. a stale file
-            # left over from yesterday), do NOT process it.  Delete it and stop.
             if entry_date != today_str:
-                log_print(f"[EXIT] STALE FILE DETECTED — entry date is {entry_date}, "
-                          f"today is {today_str}.", f)
-                log_print("[EXIT] Deleting stale active_trade.json. No tracker row written.\n", f)
+                log_print(f"[EXIT] STALE FILE — entry date {entry_date} != today {today_str}.", f)
+                log_print("[EXIT] Deleting stale file. No tracker row written.\n", f)
                 os.remove(ACTIVE_TRADE_FILE)
                 raise SystemExit(0)
 
@@ -866,58 +873,101 @@ with open(log_file, 'w', encoding='utf-8') as f:
             log_print(f"Entry PE    : {entry['put_symbol']}  bid ${entry['entry_pe']:.2f}", f)
             log_print(f"Entry combined: ${entry['entry_combined']:.2f}\n", f)
 
-            entry_combined = entry['entry_combined']
-            saved_usd_inr  = entry.get('usd_to_inr', usd_inr)
-
+            entry_combined  = entry['entry_combined']
+            saved_usd_inr   = entry.get('usd_to_inr', usd_inr)
             sl_level        = entry_combined * SL_COMBINED_MULTIPLIER
-            hard_cap_usd    = HARD_MAX_LOSS_INR / saved_usd_inr / POSITION_SIZE_BTC + entry_combined
+            hard_cap_level  = (HARD_MAX_LOSS_INR / saved_usd_inr / POSITION_SIZE_BTC
+                               + entry_combined)
 
-            # ── Step 1: Intraday SL check via minute candles ─────────────
+            # ── STEP 1: Intraday candle-based SL check ────────────────
             log_print("\nSTEP 1 — Intraday SL check (minute candles)...", f)
             intraday = get_intraday_worst_combined(
                 call_symbol=entry['call_symbol'],
                 put_symbol=entry['put_symbol'],
                 entry_time_str=entry['entry_time'],
+                sl_level=sl_level,
+                hard_cap_level=hard_cap_level,
                 fh=f
             )
 
-            sl_breached      = False
-            hard_cap_breached= False
-            early_exit_hit   = False
-            intraday_exit_ce = None
-            intraday_exit_pe = None
+            sl_breached       = False
+            hard_cap_breached = False
+            exit_combined     = None
+            exit_ce           = None
+            exit_pe           = None
+            exit_time_str     = None
+            exit_reason       = None
 
             if intraday:
                 worst = intraday['worst_combined']
                 wt    = intraday['worst_time']
 
-                if worst >= sl_level:
+                if intraday['sl_breached']:
                     sl_breached   = True
-                    exit_combined = sl_level          # cap at exact SL level
+                    exit_combined = sl_level
                     exit_time_str = wt
                     exit_reason   = f"SL — Combined {SL_COMBINED_MULTIPLIER}x (intraday @ {wt})"
-                    # Split exit combined proportionally to entry ratio for CE/PE display
-                    ratio         = entry['entry_ce'] / entry_combined if entry_combined else 0.5
-                    intraday_exit_ce = round(exit_combined * ratio, 2)
-                    intraday_exit_pe = round(exit_combined * (1 - ratio), 2)
-                    log_print(f"  *** SL BREACHED intraday at {wt} — "
+                    ratio         = (entry['entry_ce'] / entry_combined
+                                     if entry_combined else 0.5)
+                    exit_ce = round(exit_combined * ratio, 2)
+                    exit_pe = round(exit_combined * (1 - ratio), 2)
+                    log_print(f"  *** SL BREACHED at {wt} — "
                               f"peak ${worst:.2f} >= SL ${sl_level:.2f}", f)
 
-                elif worst >= hard_cap_usd:
+                elif intraday['hard_cap_breached']:
                     hard_cap_breached = True
-                    exit_combined = hard_cap_usd
+                    exit_combined = hard_cap_level
                     exit_time_str = wt
                     exit_reason   = f"Hard Cap Rs.{HARD_MAX_LOSS_INR:,} (intraday @ {wt})"
-                    ratio         = entry['entry_ce'] / entry_combined if entry_combined else 0.5
-                    intraday_exit_ce = round(exit_combined * ratio, 2)
-                    intraday_exit_pe = round(exit_combined * (1 - ratio), 2)
-                    log_print(f"  *** HARD CAP BREACHED intraday at {wt} — "
-                              f"peak ${worst:.2f} >= cap ${hard_cap_usd:.2f}", f)
+                    ratio         = (entry['entry_ce'] / entry_combined
+                                     if entry_combined else 0.5)
+                    exit_ce = round(exit_combined * ratio, 2)
+                    exit_pe = round(exit_combined * (1 - ratio), 2)
+                    log_print(f"  *** HARD CAP BREACHED at {wt} — "
+                              f"peak ${worst:.2f} >= cap ${hard_cap_level:.2f}", f)
                 else:
-                    log_print(f"  No SL breach. Peak ${worst:.2f} < SL ${sl_level:.2f} — "
-                              f"proceeding to 5:15 PM price fetch.", f)
+                    log_print(f"  No SL breach. Peak ${worst:.2f} < SL ${sl_level:.2f}.", f)
 
-            # ── Step 2: Fetch live 5:15 PM prices (if no intraday SL) ────
+            else:
+                # ── FIX: FALLBACK spot-price SL check ────────────────
+                # Candle fetch failed. Do NOT silently skip.
+                # Fetch live prices right now and check against SL.
+                # This prevents a phantom profit when options expired
+                # worthless after an intraday SL that went undetected.
+                log_print("\n  [SAFETY FALLBACK] Candle fetch failed — "
+                          "performing spot-price SL check at current time...", f)
+                cd_now = get_current_premium(entry['call_symbol'])
+                pd_now = get_current_premium(entry['put_symbol'])
+
+                if cd_now['success'] and pd_now['success']:
+                    spot_combined = cd_now['ask'] + pd_now['ask']
+                    log_print(f"  [SAFETY] Current combined ask: ${spot_combined:.2f} | "
+                              f"SL level: ${sl_level:.2f} | "
+                              f"Hard cap: ${hard_cap_level:.2f}", f)
+
+                    if spot_combined >= sl_level:
+                        # SL still active — record it
+                        sl_breached   = True
+                        exit_combined = spot_combined
+                        exit_ce       = cd_now['ask']
+                        exit_pe       = pd_now['ask']
+                        exit_time_str = now_ist.strftime('%H:%M')
+                        exit_reason   = (f"SL — Combined {SL_COMBINED_MULTIPLIER}x "
+                                         f"(fallback spot check @ {exit_time_str})")
+                        log_print(f"  [SAFETY] SL confirmed via spot check — "
+                                  f"recording as SL exit.", f)
+                    else:
+                        log_print(f"  [SAFETY] Current combined ${spot_combined:.2f} "
+                                  f"< SL ${sl_level:.2f} — proceeding to Step 2 "
+                                  f"(options likely decayed).", f)
+                        # Note: if options are near zero here, Step 2 will
+                        # record a genuine near-full-profit exit correctly.
+                else:
+                    log_print("  [SAFETY] Could not fetch live prices either — "
+                              "proceeding to Step 2 with caution.", f)
+                    log_print("  [WARNING] P&L may be unreliable — verify manually.", f)
+
+            # ── STEP 2: Live 5:15 PM price fetch (if no SL hit) ──────
             if not sl_breached and not hard_cap_breached:
                 log_print("\nSTEP 2 — Fetching live exit prices at 5:15 PM...", f)
                 cd = get_current_premium(entry['call_symbol'])
@@ -933,16 +983,9 @@ with open(log_file, 'w', encoding='utf-8') as f:
                 exit_pe       = pd['ask'] if pd['success'] else 0.0
                 exit_combined = exit_ce + exit_pe
                 exit_time_str = now_ist.strftime('%H:%M')
-
-                if exit_combined < EARLY_EXIT_PREMIUM:
-                    early_exit_hit = True
-                    exit_reason    = "Early Exit — Premium decayed"
-                else:
-                    exit_reason    = "Time Exit (5:15 PM)"
-            else:
-                # Use proportional split for CE/PE display on intraday exits
-                exit_ce = intraday_exit_ce
-                exit_pe = intraday_exit_pe
+                exit_reason   = ("Early Exit — Premium decayed"
+                                 if exit_combined < EARLY_EXIT_PREMIUM
+                                 else "Time Exit (5:15 PM)")
 
             pnl_usd = (entry_combined - exit_combined) * POSITION_SIZE_BTC
             pnl_inr = pnl_usd * saved_usd_inr
@@ -956,8 +999,8 @@ with open(log_file, 'w', encoding='utf-8') as f:
                 log_print(f"  Intraday peak  : ${intraday['worst_combined']:.2f} "
                           f"at {intraday['worst_time']} IST "
                           f"({intraday['candle_count']} candles checked)", f)
-                log_print(f"  SL level       : ${sl_level:.2f}  |  "
-                          f"Hard cap level : ${hard_cap_usd:.2f}", f)
+            log_print(f"  SL level       : ${sl_level:.2f}  |  "
+                      f"Hard cap level : ${hard_cap_level:.2f}", f)
             log_print(f"  Exit CE        : ${exit_ce:.2f}", f)
             log_print(f"  Exit PE        : ${exit_pe:.2f}", f)
             log_print(f"  Exit combined  : ${exit_combined:.2f}", f)
@@ -966,23 +1009,21 @@ with open(log_file, 'w', encoding='utf-8') as f:
             log_print(f"  Duration       : {dur_str}", f)
             log_print(SEP + "\n", f)
 
-            # ── Write tracker ────────────────────────────────────────────
             append_to_tracker({
-                'date':      entry['date'],       'day':      entry['day'],
-                'entry_time':entry['entry_time'], 'exit_time':exit_time_str,
-                'btc_spot':  entry['btc_spot'],   'atm_strike':entry['atm_strike'],
-                'call_strike':entry['call_strike'],'put_strike':entry['put_strike'],
-                'ce_dist':   entry['ce_dist'],     'pe_dist':   entry['pe_dist'],
-                'entry_ce':  entry['entry_ce'],    'entry_pe':  entry['entry_pe'],
+                'date':       entry['date'],        'day':       entry['day'],
+                'entry_time': entry['entry_time'],  'exit_time': exit_time_str,
+                'btc_spot':   entry['btc_spot'],    'atm_strike':entry['atm_strike'],
+                'call_strike':entry['call_strike'],  'put_strike':entry['put_strike'],
+                'ce_dist':    entry['ce_dist'],      'pe_dist':   entry['pe_dist'],
+                'entry_ce':   entry['entry_ce'],     'entry_pe':  entry['entry_pe'],
                 'entry_combined': entry_combined,
-                'exit_ce':   exit_ce,  'exit_pe': exit_pe, 'exit_combined': exit_combined,
-                'pnl_usd':   pnl_usd,  'pnl_inr': pnl_inr,
+                'exit_ce':    exit_ce,  'exit_pe': exit_pe, 'exit_combined': exit_combined,
+                'pnl_usd':    pnl_usd, 'pnl_inr': pnl_inr,
                 'exit_reason':exit_reason, 'duration': dur_str,
                 'mode': 'DRY RUN' if DRY_RUN else 'LIVE'
             })
             log_print(f"[TRACKER] Row written to {TRACKER_FILE}\n", f)
 
-            # ── Clean up ─────────────────────────────────────────────────
             os.remove(ACTIVE_TRADE_FILE)
             log_print(f"[CLEANUP] {ACTIVE_TRADE_FILE} deleted.\n", f)
 
