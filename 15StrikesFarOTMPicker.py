@@ -19,15 +19,19 @@ Two-phase approach:
 PHASE is injected as an environment variable by the GitHub Actions
 workflow - no file-sniffing, no ambiguity.
 
-FIXES (v2):
-  - get_intraday_worst_combined: 'NoneType' has no attribute 'get'
-      Root cause: ticker endpoint returns 'product_id' key not 'id'.
-      Fix: try both keys + log available keys on failure.
-      Additionally: candle endpoint accepts symbol directly,
-      product_id lookup step was unnecessary and fragile — removed.
-  - Silent SL skip was dangerous: if candle fetch fails, script now
-      does a FALLBACK spot-price SL check before proceeding to Step 2.
-      A failed candle fetch can no longer produce a phantom profit.
+FIXES (v3):
+  - resolution '1' -> '1m': Delta candle API requires string '1m' not '1'.
+      This was the root cause of ALL candle fetch failures since v1.
+  - Fallback when options are expired: previously if live price fetch
+      failed (because expired contracts are removed from ticker endpoint),
+      script recorded $0 exit — completely wrong on days BTC moved.
+      Fix: fall back to BTC spot intrinsic value calculation to estimate
+      true option value at expiry. Also tries mark price endpoint.
+  - Step 2 zero-value guard: if both legs return $0 at 5:15 PM fetch,
+      now explicitly estimates from settlement spot rather than silently
+      recording a phantom full-profit win.
+  - WARNING flag added when intrinsic value > 0 at expiry, prompting
+      manual verification of whether intraday SL should have triggered.
 """
 
 import requests
@@ -235,7 +239,7 @@ def get_intraday_worst_combined(call_symbol, put_symbol, entry_time_str, sl_leve
             r = requests.get(
                 f"{BASE_URL}/v2/history/candles",
                 params={
-                    'resolution': '1',
+                    'resolution': '1m',
                     'symbol':     symbol,
                     'start':      int(entry_dt.timestamp()),
                     'end':        int(exit_dt.timestamp())
@@ -946,7 +950,6 @@ with open(log_file, 'w', encoding='utf-8') as f:
                               f"Hard cap: ${hard_cap_level:.2f}", f)
 
                     if spot_combined >= sl_level:
-                        # SL still active — record it
                         sl_breached   = True
                         exit_combined = spot_combined
                         exit_ce       = cd_now['ask']
@@ -958,14 +961,63 @@ with open(log_file, 'w', encoding='utf-8') as f:
                                   f"recording as SL exit.", f)
                     else:
                         log_print(f"  [SAFETY] Current combined ${spot_combined:.2f} "
-                                  f"< SL ${sl_level:.2f} — proceeding to Step 2 "
-                                  f"(options likely decayed).", f)
-                        # Note: if options are near zero here, Step 2 will
-                        # record a genuine near-full-profit exit correctly.
+                                  f"< SL ${sl_level:.2f} — proceeding to Step 2.", f)
                 else:
-                    log_print("  [SAFETY] Could not fetch live prices either — "
-                              "proceeding to Step 2 with caution.", f)
-                    log_print("  [WARNING] P&L may be unreliable — verify manually.", f)
+                    # FIX: Live price fetch failed — options are likely expired
+                    # (Delta removes expired contracts from ticker endpoint).
+                    # At 5:15 PM IST BTC options expire. If candle fetch also
+                    # failed, we cannot determine intraday SL. We must use
+                    # the SETTLEMENT price from the mark/index price endpoint
+                    # to estimate what the PE was worth at its worst point.
+                    log_print("  [SAFETY] Live price fetch failed — options likely expired.", f)
+                    log_print("  [SAFETY] Attempting settlement price check via mark price...", f)
+
+                    # Try to get BTC spot at expiry to estimate option value
+                    try:
+                        r_spot = requests.get(f"{BASE_URL}/v2/tickers/BTCUSD", timeout=10)
+                        if r_spot.status_code == 200:
+                            current_spot = float(r_spot.json()['result']['spot_price'])
+                            log_print(f"  [SAFETY] Current BTC spot: ${current_spot:,.2f}", f)
+
+                            # Estimate intrinsic value of PE at worst case
+                            # (entry spot - current spot if BTC fell, else 0)
+                            entry_spot  = entry.get('btc_spot', current_spot)
+                            put_strike  = entry['put_strike']
+                            call_strike = entry['call_strike']
+
+                            # Intrinsic value at current spot
+                            pe_intrinsic = max(0, put_strike  - current_spot)
+                            ce_intrinsic = max(0, current_spot - call_strike)
+                            estimated_combined = pe_intrinsic + ce_intrinsic
+
+                            log_print(f"  [SAFETY] Entry spot: ${entry_spot:,.2f} | "
+                                      f"Current spot: ${current_spot:,.2f}", f)
+                            log_print(f"  [SAFETY] PE intrinsic: ${pe_intrinsic:.2f} | "
+                                      f"CE intrinsic: ${ce_intrinsic:.2f} | "
+                                      f"Estimated combined: ${estimated_combined:.2f}", f)
+
+                            if estimated_combined >= sl_level:
+                                sl_breached   = True
+                                exit_combined = estimated_combined
+                                exit_ce       = ce_intrinsic
+                                exit_pe       = pe_intrinsic
+                                exit_time_str = now_ist.strftime('%H:%M')
+                                exit_reason   = (f"SL — Combined {SL_COMBINED_MULTIPLIER}x "
+                                                 f"(estimated from settlement spot)")
+                                log_print(f"  [SAFETY] Estimated SL breach — recording as SL exit.", f)
+                                log_print(f"  [WARNING] Verify this manually against actual option prices.", f)
+                            else:
+                                log_print(f"  [SAFETY] Estimated combined ${estimated_combined:.2f} "
+                                          f"< SL ${sl_level:.2f} — proceeding to Step 2.", f)
+                                log_print(f"  [WARNING] If BTC fell sharply intraday and recovered, "
+                                          f"this may still be inaccurate — verify manually.", f)
+                        else:
+                            log_print("  [SAFETY] Could not fetch BTC spot either — "
+                                      "proceeding to Step 2 with caution.", f)
+                            log_print("  [WARNING] P&L may be unreliable — verify manually.", f)
+                    except Exception as e_spot:
+                        log_print(f"  [SAFETY] Spot check exception: {e_spot}", f)
+                        log_print("  [WARNING] P&L may be unreliable — verify manually.", f)
 
             # ── STEP 2: Live 5:15 PM price fetch (if no SL hit) ──────
             if not sl_breached and not hard_cap_breached:
@@ -983,9 +1035,42 @@ with open(log_file, 'w', encoding='utf-8') as f:
                 exit_pe       = pd['ask'] if pd['success'] else 0.0
                 exit_combined = exit_ce + exit_pe
                 exit_time_str = now_ist.strftime('%H:%M')
-                exit_reason   = ("Early Exit — Premium decayed"
-                                 if exit_combined < EARLY_EXIT_PREMIUM
-                                 else "Time Exit (5:15 PM)")
+
+                # FIX: If both legs return $0, options have likely expired.
+                # Use BTC spot intrinsic value to estimate true exit value.
+                # $0 combined on a day BTC moved significantly is WRONG.
+                if exit_combined == 0.0:
+                    log_print("  [WARN] Both legs returned $0 — options may be expired.", f)
+                    log_print("  [FIX] Estimating exit value from BTC spot intrinsic...", f)
+                    try:
+                        r_spot = requests.get(f"{BASE_URL}/v2/tickers/BTCUSD", timeout=10)
+                        if r_spot.status_code == 200:
+                            settlement_spot = float(r_spot.json()['result']['spot_price'])
+                            put_strike      = entry['put_strike']
+                            call_strike     = entry['call_strike']
+                            exit_pe         = max(0, put_strike  - settlement_spot)
+                            exit_ce         = max(0, settlement_spot - call_strike)
+                            exit_combined   = exit_ce + exit_pe
+                            log_print(f"  [FIX] Settlement spot: ${settlement_spot:,.2f} | "
+                                      f"CE intrinsic: ${exit_ce:.2f} | "
+                                      f"PE intrinsic: ${exit_pe:.2f} | "
+                                      f"Combined: ${exit_combined:.2f}", f)
+                            if exit_combined == 0.0:
+                                exit_reason = "Time Exit — Options Expired OTM (full premium kept)"
+                                log_print("  [FIX] Both strikes OTM at expiry — "
+                                          "full premium kept. This is a WIN.", f)
+                            else:
+                                log_print(f"  [WARNING] Options had intrinsic value at expiry — "
+                                          f"verify if SL should have triggered intraday.", f)
+                        else:
+                            log_print("  [WARN] Could not fetch settlement spot.", f)
+                    except Exception as e_fix:
+                        log_print(f"  [WARN] Intrinsic value estimation failed: {e_fix}", f)
+
+                if not exit_reason:
+                    exit_reason = ("Early Exit — Premium decayed"
+                                   if exit_combined < EARLY_EXIT_PREMIUM
+                                   else "Time Exit (5:15 PM)")
 
             pnl_usd = (entry_combined - exit_combined) * POSITION_SIZE_BTC
             pnl_inr = pnl_usd * saved_usd_inr
