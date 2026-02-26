@@ -1,0 +1,19 @@
+{
+  "date": "27-02-2026",
+  "day": "Friday",
+  "entry_time": "03:53",
+  "btc_spot": 67370.8,
+  "atm_strike": 67400.0,
+  "usd_to_inr": 90.97,
+  "call_strike": 69800.0,
+  "put_strike": 64800.0,
+  "ce_dist": 15,
+  "pe_dist": 15,
+  "call_symbol": "C-BTC-69800-270226",
+  "put_symbol": "P-BTC-64800-270226",
+  "call_product_id": 124021,
+  "put_product_id": 123815,
+  "entry_ce": 20.0,
+  "entry_pe": 19.0,
+  "entry_combined": 39.0
+}
