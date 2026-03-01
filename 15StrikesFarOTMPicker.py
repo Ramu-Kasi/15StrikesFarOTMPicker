@@ -37,6 +37,10 @@ FIXES in v4 (definitive):
       also fails (expired), falls back to settlement spot intrinsic check.
       A failed candle fetch can NEVER silently become a phantom profit.
 
+  FIX 5 — Whole number formatting:
+      All P&L columns (USD, INR, Cumulative) now display as whole numbers.
+      No more $37.6000 — shows clean $38 / ₹3,420 instead.
+
 ENVIRONMENT VARIABLES (set in GitHub Actions):
   PHASE            : 'ENTRY' or 'EXIT'
   DELTA_API_KEY    : Your Delta Exchange API key
@@ -204,7 +208,6 @@ def close_position(product_id, size):
         return {'success': False, 'error': str(e)}
 
 def get_current_premium(symbol):
-    """Fetch live bid/ask for a given option symbol."""
     try:
         r = requests.get(f"{BASE_URL}/v2/tickers/{symbol}", timeout=10)
         if r.status_code == 200:
@@ -219,7 +222,6 @@ def get_current_premium(symbol):
         return {'success': False, 'error': str(e)}
 
 def get_btc_spot():
-    """Fetch current BTC spot price."""
     try:
         r = requests.get(f"{BASE_URL}/v2/tickers/BTCUSD", timeout=10)
         if r.status_code == 200:
@@ -234,18 +236,6 @@ def get_btc_spot():
 
 def get_intraday_worst_combined(call_symbol, put_symbol, entry_time_str,
                                 sl_level, hard_cap_level, fh=None):
-    """
-    Fetch 1-minute candles for both legs, zip by timestamp, find the
-    highest combined premium seen between entry and 5:15 PM.
-
-    FIX 1: resolution='1m' (string) — not '1' (integer).
-           Delta API requires the exact string '1m'.
-    FIX 2: Pass 'symbol' directly to /v2/history/candles.
-           No product_id lookup needed.
-
-    Returns dict on success, None on failure.
-    Caller MUST handle None with a fallback — never silently skip.
-    """
     try:
         now_ist     = datetime.now(IST)
         parts       = entry_time_str.split(':')
@@ -260,8 +250,8 @@ def get_intraday_worst_combined(call_symbol, put_symbol, entry_time_str,
 
         def fetch_candles(symbol):
             params = {
-                'resolution': '1m',          # FIX 1: must be string '1m'
-                'symbol':     symbol,         # FIX 2: symbol directly, no product_id
+                'resolution': '1m',
+                'symbol':     symbol,
                 'start':      int(entry_dt.timestamp()),
                 'end':        int(exit_dt.timestamp())
             }
@@ -353,7 +343,7 @@ def _close_both_legs(fh, call_pid, put_pid, reason):
             log_print(f"  {name}: ERROR — {res.get('error')}", fh)
 
 # =====================================================================
-# LIVE MONITORING (Saturdays only, DRY_RUN=False)
+# LIVE MONITORING
 # =====================================================================
 
 def monitor_live(fh, call_sym, put_sym, call_pid, put_pid,
@@ -383,7 +373,6 @@ def monitor_live(fh, call_sym, put_sym, call_pid, put_pid,
             now      = datetime.now(IST)
             time_str = now.strftime('%H:%M:%S')
 
-            # Time exit
             if now.hour > EXIT_HOUR or (now.hour == EXIT_HOUR and now.minute >= EXIT_MINUTE):
                 log_print(f"\n[{time_str}] TIME EXIT triggered", fh)
                 cd = get_current_premium(call_sym)
@@ -406,7 +395,6 @@ def monitor_live(fh, call_sym, put_sym, call_pid, put_pid,
                 time.sleep(MONITOR_INTERVAL)
                 continue
 
-            # Check for manual exit
             pos_res = get_positions()
             if pos_res['success']:
                 has_call = any(
@@ -437,10 +425,9 @@ def monitor_live(fh, call_sym, put_sym, call_pid, put_pid,
             log_print(
                 f"[{time_str}] CE ${cur_ce:.2f} | PE ${cur_pe:.2f} | "
                 f"Combined ${cur_combined:.2f} | "
-                f"P&L ${pnl_usd:+.4f} ({fmt_inr(pnl_inr)})", fh
+                f"P&L ${pnl_usd:+.2f} ({fmt_inr(pnl_inr)})", fh
             )
 
-            # SL check
             if cur_combined >= entry_combined * SL_COMBINED_MULTIPLIER:
                 log_print(f"\n[{time_str}] SL HIT: combined >= {SL_COMBINED_MULTIPLIER}x", fh)
                 result.update({
@@ -453,7 +440,6 @@ def monitor_live(fh, call_sym, put_sym, call_pid, put_pid,
                 _close_both_legs(fh, call_pid, put_pid, "Combined 2.5x SL")
                 break
 
-            # Hard cap check
             loss_inr = (cur_combined - entry_combined) * POSITION_SIZE_BTC * usd_inr
             if loss_inr >= HARD_MAX_LOSS_INR:
                 log_print(f"\n[{time_str}] HARD CAP HIT: Rs.{loss_inr:,.0f}", fh)
@@ -467,7 +453,6 @@ def monitor_live(fh, call_sym, put_sym, call_pid, put_pid,
                 _close_both_legs(fh, call_pid, put_pid, "Hard Cap")
                 break
 
-            # Early exit (premium decayed)
             if cur_combined < EARLY_EXIT_PREMIUM:
                 log_print(
                     f"\n[{time_str}] EARLY EXIT: "
@@ -499,7 +484,7 @@ def monitor_live(fh, call_sym, put_sym, call_pid, put_pid,
     return result
 
 # =====================================================================
-# EXCEL TRACKER
+# EXCEL TRACKER — FIX 5: All P&L columns use whole number formatting
 # =====================================================================
 
 def append_to_tracker(trade):
@@ -572,7 +557,7 @@ def append_to_tracker(trade):
         trade.get('ce_dist', 0),     trade.get('pe_dist', 0),
         trade.get('entry_ce', 0),    trade.get('entry_pe', 0), entry_combined,
         trade.get('exit_ce', 0),     trade.get('exit_pe', 0),  trade.get('exit_combined', 0),
-        round(pnl_usd, 4), round(pnl_inr, 2), round(pnl_pct, 1),
+        round(pnl_usd),              round(pnl_inr),           round(pnl_pct, 1),
         trade.get('exit_reason',''), trade.get('duration','-'),
         trade.get('mode','DRY RUN'), 0
     ]
@@ -582,6 +567,7 @@ def append_to_tracker(trade):
     is_sat    = trade.get('day','') == 'Saturday'
     is_profit = pnl_inr >= 0
 
+    # Apply base formatting to all cells in the row
     for ci in range(1, len(HEADERS) + 1):
         cell           = ws.cell(row=nr, column=ci)
         cell.font      = D_FONT
@@ -590,24 +576,36 @@ def append_to_tracker(trade):
         if is_sat:
             cell.fill = SAT_FILL
 
+    # Dollar columns — whole numbers, no decimals
     for col_idx, fmt in [
-        (5,'$#,##0.00'), (6,'$#,##0.00'), (7,'$#,##0.00'), (8,'$#,##0.00'),
-        (11,'$#,##0.00'), (12,'$#,##0.00'), (13,'$#,##0.00'),
-        (14,'$#,##0.00'), (15,'$#,##0.00'), (16,'$#,##0.00')
+        (5,  '$#,##0'),   # BTC Spot
+        (6,  '$#,##0'),   # ATM Strike
+        (7,  '$#,##0'),   # Call Strike
+        (8,  '$#,##0'),   # Put Strike
+        (11, '$#,##0'),   # Entry CE
+        (12, '$#,##0'),   # Entry PE
+        (13, '$#,##0'),   # Entry Combined
+        (14, '$#,##0'),   # Exit CE
+        (15, '$#,##0'),   # Exit PE
+        (16, '$#,##0'),   # Exit Combined
     ]:
         ws.cell(row=nr, column=col_idx).number_format = fmt
 
+    # P&L columns — coloured green/red + whole numbers (FIX 5)
     for col_idx in (17, 18, 19):
         c      = ws.cell(row=nr, column=col_idx)
         c.font = G_FONT if is_profit else R_FONT
         c.fill = G_FILL if is_profit else R_FILL
 
-    ws.cell(row=nr, column=17).number_format = '$#,##0.0000;-$#,##0.0000'
-    ws.cell(row=nr, column=18).number_format = '\u20b9#,##0.00;-\u20b9#,##0.00'
+    # FIX 5: Whole numbers only — no .0000 or .xx decimals
+    ws.cell(row=nr, column=17).number_format = '$#,##0;-$#,##0'          # P&L USD
+    ws.cell(row=nr, column=18).number_format = '\u20b9#,##0;-\u20b9#,##0'  # P&L INR
+    ws.cell(row=nr, column=19).number_format = '0.0%;-0.0%'               # P&L %
 
+    # Cumulative P&L — whole number INR (FIX 5)
     cum_cell               = ws.cell(row=nr, column=23)
     cum_cell.value         = f'=R{nr}' if nr == 2 else f'=W{nr-1}+R{nr}'
-    cum_cell.number_format = '\u20b9#,##0.00;-\u20b9#,##0.00'
+    cum_cell.number_format = '\u20b9#,##0;-\u20b9#,##0'                   # FIX 5
     cum_cell.font          = Font(name='Arial', size=9, bold=True)
 
     wb.save(TRACKER_FILE)
@@ -816,7 +814,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
             )
             log_print(
                 f"  Combined: ${combined:.2f}  |  "
-                f"Total: ${combined * POSITION_SIZE_BTC:.4f}  "
+                f"Total: ${combined * POSITION_SIZE_BTC:.2f}  "
                 f"({fmt_inr(combined * POSITION_SIZE_BTC * usd_inr)})", f
             )
             log_print(
@@ -854,7 +852,6 @@ with open(log_file, 'w', encoding='utf-8') as f:
             if DRY_RUN:
                 log_print("[DRY RUN] No orders placed. EXIT phase runs at 5:15 PM IST.\n", f)
             elif is_saturday:
-                # Place live orders on Saturdays only
                 log_print("PLACING LIVE ORDERS...\n", f)
                 bal = get_wallet_balance()
                 if bal['success']:
@@ -893,7 +890,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
                     today_str, today_str
                 )
                 log_print(
-                    f"\nFINAL P&L: ${pnl_usd:+.4f}  ({fmt_inr(pnl_inr)})  "
+                    f"\nFINAL P&L: ${pnl_usd:+.2f}  ({fmt_inr(pnl_inr)})  "
                     f"— {exit_data['exit_reason']}\n", f
                 )
                 append_to_tracker({
@@ -1002,7 +999,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
                 HARD_MAX_LOSS_INR / saved_usd_inr / POSITION_SIZE_BTC + entry_combined
             )
 
-            # ── STEP 1: Intraday candle SL check ─────────────────────
+            # STEP 1: Intraday candle SL check
             log_print("\nSTEP 1 — Intraday SL check (1m candles)...", f)
             intraday = get_intraday_worst_combined(
                 call_symbol=entry['call_symbol'],
@@ -1022,7 +1019,6 @@ with open(log_file, 'w', encoding='utf-8') as f:
             exit_reason       = None
 
             if intraday:
-                # Candles fetched successfully — check for breach
                 worst = intraday['worst_combined']
                 wt    = intraday['worst_time']
 
@@ -1064,9 +1060,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
                     )
 
             else:
-                # ── FIX 4: SAFETY FALLBACK ────────────────────────────
-                # Candle fetch failed. NEVER silently skip.
-                # 3-level fallback: live price → spot intrinsic → warn
+                # FIX 4: Safety fallback
                 log_print(
                     "\n  [SAFETY FALLBACK] Candle fetch failed — "
                     "trying live price check...", f
@@ -1075,7 +1069,6 @@ with open(log_file, 'w', encoding='utf-8') as f:
                 pd_now = get_current_premium(entry['put_symbol'])
 
                 if cd_now['success'] and pd_now['success']:
-                    # Level 1: live price available
                     spot_combined = cd_now['ask'] + pd_now['ask']
                     log_print(
                         f"  [SAFETY] Live combined: ${spot_combined:.2f} | "
@@ -1098,7 +1091,6 @@ with open(log_file, 'w', encoding='utf-8') as f:
                             f"— proceeding to Step 2.", f
                         )
                 else:
-                    # Level 2: options expired, use BTC spot intrinsic
                     log_print(
                         "  [SAFETY] Live price unavailable — "
                         "options likely expired. Trying spot intrinsic...", f
@@ -1143,14 +1135,13 @@ with open(log_file, 'w', encoding='utf-8') as f:
                                     "verify if intraday SL should have triggered.", f
                                 )
                     else:
-                        # Level 3: completely blind — warn and continue
                         log_print(
                             "  [SAFETY] Cannot fetch spot either — "
                             "proceeding to Step 2. P&L may be unreliable.", f
                         )
                         log_print("  [WARNING] Verify this trade manually.", f)
 
-            # ── STEP 2: Live 5:15 PM price fetch ─────────────────────
+            # STEP 2: Live 5:15 PM price fetch
             if not sl_breached and not hard_cap_breached:
                 log_print("\nSTEP 2 — Fetching live exit prices at 5:15 PM...", f)
                 cd = get_current_premium(entry['call_symbol'])
@@ -1167,9 +1158,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
                 exit_combined = exit_ce + exit_pe
                 exit_time_str = now_ist.strftime('%H:%M')
 
-                # ── FIX 3: Zero-value guard ───────────────────────────
-                # Both $0 = expired contracts removed from Delta's ticker.
-                # Estimate true value from BTC spot intrinsic.
+                # FIX 3: Zero-value guard
                 if exit_combined == 0.0:
                     log_print(
                         "  [WARN] Both legs $0 — options expired. "
@@ -1214,7 +1203,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
                         else "Time Exit (5:15 PM)"
                     )
 
-            # ── Final P&L ─────────────────────────────────────────────
+            # Final P&L
             pnl_usd = (entry_combined - exit_combined) * POSITION_SIZE_BTC
             pnl_inr = pnl_usd * saved_usd_inr
             dur_str = calc_duration(
@@ -1236,7 +1225,7 @@ with open(log_file, 'w', encoding='utf-8') as f:
             log_print(f"  Exit CE        : ${exit_ce:.2f}", f)
             log_print(f"  Exit PE        : ${exit_pe:.2f}", f)
             log_print(f"  Exit combined  : ${exit_combined:.2f}", f)
-            log_print(f"  P&L            : ${pnl_usd:+.4f}  ({fmt_inr(pnl_inr)})", f)
+            log_print(f"  P&L            : ${pnl_usd:+.2f}  ({fmt_inr(pnl_inr)})", f)
             log_print(f"  Exit reason    : {exit_reason}", f)
             log_print(f"  Duration       : {dur_str}", f)
             log_print(SEP + "\n", f)
