@@ -497,8 +497,8 @@ def append_to_tracker(trade):
         "CE Dist", "PE Dist",
         "Entry CE ($)", "Entry PE ($)", "Entry Combined ($)",
         "Exit CE ($)", "Exit PE ($)", "Exit Combined ($)",
-        "P&L (USD)", "P&L (INR)", "P&L %",
-        "Exit Reason", "Duration", "Mode", "Cum P&L (INR)"
+        "P&L (USD)", "P&L (INR)", "Cum P&L (INR)",
+        "Exit Reason", "Duration", "Mode"
     ]
 
     H_FONT   = Font(name='Arial', bold=True, color='FFFFFF', size=10)
@@ -520,7 +520,7 @@ def append_to_tracker(trade):
     COL_W = {
         'A':12,'B':11,'C':10,'D':10,'E':14,'F':14,'G':14,'H':14,
         'I':8,'J':8,'K':13,'L':13,'M':16,'N':13,'O':13,'P':16,
-        'Q':13,'R':13,'S':10,'T':28,'U':11,'V':10,'W':16
+        'Q':13,'R':13,'S':28,'T':11,'U':10,'V':16
     }
 
     is_new = not os.path.exists(TRACKER_FILE)
@@ -546,8 +546,6 @@ def append_to_tracker(trade):
     entry_combined = trade.get('entry_combined', 0)
     pnl_usd        = trade.get('pnl_usd', 0)
     pnl_inr        = trade.get('pnl_inr', 0)
-    total_prem     = entry_combined * POSITION_SIZE_BTC
-    pnl_pct        = (pnl_usd / total_prem * 100) if total_prem else 0
 
     row = [
         trade.get('date',''),        trade.get('day',''),
@@ -557,9 +555,9 @@ def append_to_tracker(trade):
         trade.get('ce_dist', 0),     trade.get('pe_dist', 0),
         trade.get('entry_ce', 0),    trade.get('entry_pe', 0), entry_combined,
         trade.get('exit_ce', 0),     trade.get('exit_pe', 0),  trade.get('exit_combined', 0),
-        round(pnl_usd),              round(pnl_inr),           round(pnl_pct, 1),
+        round(pnl_usd),              round(pnl_inr),           0,
         trade.get('exit_reason',''), trade.get('duration','-'),
-        trade.get('mode','DRY RUN'), 0
+        trade.get('mode','DRY RUN')
     ]
     ws.append(row)
     nr = ws.max_row
@@ -592,20 +590,19 @@ def append_to_tracker(trade):
         ws.cell(row=nr, column=col_idx).number_format = fmt
 
     # P&L columns — coloured green/red + whole numbers (FIX 5)
-    for col_idx in (17, 18, 19):
+    for col_idx in (17, 18):
         c      = ws.cell(row=nr, column=col_idx)
         c.font = G_FONT if is_profit else R_FONT
         c.fill = G_FILL if is_profit else R_FILL
 
     # FIX 5: Whole numbers only — no .0000 or .xx decimals
-    ws.cell(row=nr, column=17).number_format = '$#,##0;-$#,##0'          # P&L USD
+    ws.cell(row=nr, column=17).number_format = '$#,##0;-$#,##0'             # P&L USD
     ws.cell(row=nr, column=18).number_format = '\u20b9#,##0;-\u20b9#,##0'  # P&L INR
-    ws.cell(row=nr, column=19).number_format = '0.0%;-0.0%'               # P&L %
 
-    # Cumulative P&L — whole number INR (FIX 5)
-    cum_cell               = ws.cell(row=nr, column=23)
-    cum_cell.value         = f'=R{nr}' if nr == 2 else f'=W{nr-1}+R{nr}'
-    cum_cell.number_format = '\u20b9#,##0;-\u20b9#,##0'                   # FIX 5
+    # Cumulative P&L — col 19, whole number INR, formula =prev+this
+    cum_cell               = ws.cell(row=nr, column=19)
+    cum_cell.value         = f'=R{nr}' if nr == 2 else f'=S{nr-1}+R{nr}'
+    cum_cell.number_format = '\u20b9#,##0;-\u20b9#,##0'
     cum_cell.font          = Font(name='Arial', size=9, bold=True)
 
     wb.save(TRACKER_FILE)
